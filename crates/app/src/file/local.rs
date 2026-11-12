@@ -26,7 +26,7 @@ use crate::file::{
     },
     watcher::watch,
 };
-use crate::player::utils::{Media, file_extension, include_file_extension, probe_media};
+use crate::player::utils::{Media, file_extension, include_file_extension};
 use crate::utils::{config::PlayoutConfig, errors::ServiceError};
 
 #[derive(Clone, Debug)]
@@ -74,7 +74,13 @@ impl LocalStorage {
             let mut parents = fs::read_dir(&parent_path).await?;
 
             while let Some(child) = parents.next_entry().await? {
-                if child.metadata().await?.is_dir() {
+                // Skip entries that cannot be stat'ed, e.g. locked Windows
+                // system files, instead of failing the whole listing.
+                let Ok(child_meta) = child.metadata().await else {
+                    continue;
+                };
+
+                if child_meta.is_dir() {
                     parent_folders.push(
                         child
                             .path()
@@ -97,7 +103,11 @@ impl LocalStorage {
         let mut folders = vec![];
 
         while let Some(child) = paths_obj.next_entry().await? {
-            let f_meta = child.metadata().await?;
+            // Skip entries that cannot be stat'ed, e.g. locked Windows
+            // system files, instead of failing the whole listing.
+            let Ok(f_meta) = child.metadata().await else {
+                continue;
+            };
 
             // ignore hidden files/folders on unix
             if child.path().to_string_lossy().to_string().contains("/.") {
@@ -130,19 +140,43 @@ impl LocalStorage {
         files.path_sort(natural_lexical_cmp);
         let mut media_files = vec![];
 
-        for file in files {
-            match probe_media(file.to_string_lossy().as_ref()).await {
-                Ok(probe) => {
-                    let duration = probe.format.duration.unwrap_or_default();
+        if path_obj.with_duration {
+            // ffprobe is synchronous, so run the probes on the blocking
+            // thread pool in small batches, otherwise large folders stall
+            // the async executor for a long time.
+            for chunk in files.chunks(16) {
+                let mut tasks = Vec::with_capacity(chunk.len());
 
-                    let video = VideoFile {
-                        name: file.file_name().unwrap().to_string_lossy().to_string(),
-                        duration,
-                    };
-                    media_files.push(video);
+                for file in chunk {
+                    let path = file.clone();
+
+                    tasks.push(tokio::task::spawn_blocking(move || {
+                        let name = path.file_name().unwrap().to_string_lossy().to_string();
+                        let probe = ff_engine::probe_media(&path.to_string_lossy());
+
+                        (name, probe)
+                    }));
                 }
-                Err(e) => error!("{e:?}"),
-            };
+
+                for task in tasks {
+                    match task.await {
+                        Ok((name, Ok(probe))) => {
+                            let duration = probe.format.duration.unwrap_or_default();
+
+                            media_files.push(VideoFile { name, duration });
+                        }
+                        Ok((_, Err(e))) => error!("{e:?}"),
+                        Err(e) => error!("{e:?}"),
+                    }
+                }
+            }
+        } else {
+            for file in files {
+                media_files.push(VideoFile {
+                    name: file.file_name().unwrap().to_string_lossy().to_string(),
+                    duration: 0.0,
+                });
+            }
         }
 
         obj.folders = Some(folders);

@@ -235,6 +235,9 @@ rejected.
 | `PUT` | `/api/file/{id}/upload?path=folder` | Chunked `multipart/form-data` upload |
 | `PUT` | `/api/file/{id}/import?file=list.m3u&date=YYYY-MM-DD` | `multipart/form-data` with a file field |
 | `POST` | `/api/file/{id}/access-token` | `{ "filename": "folder/file.mp4" }` |
+| `GET` | `/api/file/{id}/favorites` | Returns the paths of the current user's pinned media folders (Quick Access) |
+| `POST` | `/api/file/{id}/favorites` | `{ "path": "/subfolder" }`. Pin a folder that exists inside the channel storage |
+| `DELETE` | `/api/file/{id}/favorites` | `{ "path": "/subfolder" }`. Unpin a folder |
 
 The selection endpoints accept paths relative to the storage root or absolute
 paths inside that root. Paths outside the root and parent traversal are
@@ -261,6 +264,11 @@ ranges have been written successfully.
 `POST /api/file/{id}/access-token` returns `{ "access": "...",
 "expires_in_seconds": 900 }`. It creates a single-file token bound to the
 request IP address and channel. It can be used for browser media previews:
+
+Favorites are stored per user and channel in the database and drive the
+"Quick Access" section of the media browser. Pinning validates that the path
+resolves to an existing folder inside the channel storage; traversal attempts
+are rejected.
 
 ```bash
 curl 'http://127.0.0.1:8787/file/1/folder/file.mp4?access=<ACCESS_TOKEN>'

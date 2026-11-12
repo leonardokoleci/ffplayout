@@ -1,0 +1,55 @@
+services:
+  ffplayout:
+    container_name: ffplayout
+    image: ffplayout:local
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        # Set RELEASE_BUILD=0 (e.g. in .env) for a fast debug build while
+        # developing. The debug binary serves no frontend, which is fine
+        # because the vite dev service provides the UI.
+        RELEASE_BUILD: ${RELEASE_BUILD:-1}
+    environment:
+      TZ: Europe/Berlin
+    ports:
+      - '8787:8787'
+    volumes:
+      - ffplayout_db:/usr/share/ffplayout/db
+      - ffplayout_public:/usr/share/ffplayout/public
+      - ${FFPLAYOUT_MEDIA:-./media}:/var/lib/ffplayout/tv-media
+      - ffplayout_playlists:/var/lib/ffplayout/playlists
+      # Whole-machine access: the Docker Desktop VM shares all host drives
+      # under /run/desktop/mnt/host, so every drive appears dynamically.
+      - /:/host
+    restart: unless-stopped
+
+  # Frontend dev server with hot reload. Start with:
+  #   docker compose --profile dev up -d
+  # then open http://127.0.0.1:5757. Frontend edits reload instantly
+  # without rebuilding the ffplayout image.
+  vite:
+    container_name: ffplayout-vite
+    image: node:24-slim
+    profiles: ['dev']
+    working_dir: /app
+    command: sh -c "npm install --no-audit --no-fund && exec npx vite --host 0.0.0.0 --port 5757"
+    environment:
+      FFPLAYOUT_DOCKER: '1'
+      FFPLAYOUT_PROXY_TARGET: http://ffplayout:8787
+    ports:
+      - '5757:5757'
+    volumes:
+      - .:/app
+      - ffplayout_node_modules:/app/node_modules
+      - ffplayout_npm_cache:/root/.npm
+    depends_on:
+      - ffplayout
+    restart: unless-stopped
+
+volumes:
+  ffplayout_db:
+  ffplayout_public:
+  ffplayout_playlists:
+  ffplayout_node_modules:
+  ffplayout_npm_cache:

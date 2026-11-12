@@ -15,6 +15,7 @@ import { useMedia } from '@/stores/media'
 
 import GenericModal from '@/components/utils/GenericModal.vue'
 import VideoPlayer from '@/components/utils/VideoPlayer.vue'
+import MediaTree from '@/components/media/MediaTree.vue'
 
 import { authFetch } from '@/composables/authFetch'
 import { stringFormatter } from '@/composables/helper'
@@ -27,7 +28,7 @@ const authStore = useAuth()
 const configStore = useConfig()
 const indexStore = useIndex()
 const mediaStore = useMedia()
-const { toMin, mediaType, filename, parent, dir_file } = stringFormatter()
+const { toMin, mediaType, parent, dir_file } = stringFormatter()
 const { i } = storeToRefs(useConfig())
 const {
     uploadTask,
@@ -60,6 +61,7 @@ const folderName = ref({} as Folder)
 const inputFiles = ref([] as File[])
 const fileInputName = ref()
 const lastPath = ref('')
+const pendingUploadPath = ref<string | null>(null)
 
 document.title = `${t('button.media')} | ffplayout`
 
@@ -123,19 +125,39 @@ function handleDragLeave(event: any) {
 }
 
 async function handleDrop(event: any, targetFolder: any, isParent: boolean | null) {
-    const itemData = JSON.parse(event.dataTransfer.getData('application/json'))
-    const source = `/${mediaStore.folderTree.source}/${itemData.name}`.replace(/\/[/]+/g, '/')
+    if (event.dataTransfer?.files?.length) {
+        let folderPath = targetFolder
+
+        if (isParent) {
+            folderPath = `/${parent(mediaStore.folderTree.source)}/${targetFolder.name}`
+        } else if (isParent === false) {
+            folderPath = `/${mediaStore.folderTree.source}/${targetFolder.name}`
+        }
+
+        dropUploadFiles(event.dataTransfer.files, `${folderPath}/`.replace(/\/[/]+/g, '/'))
+
+        return
+    }
+
+    const itemData = event.dataTransfer?.getData('application/json')
+
+    if (!itemData) {
+        return
+    }
+
+    const item = JSON.parse(itemData)
+    const source = `/${mediaStore.folderTree.source}/${item.name}`.replace(/\/[/]+/g, '/')
     let target
 
     if (isParent === null) {
-        target = `${targetFolder}/${itemData.name}`.replace(/\/[/]+/g, '/')
+        target = `${targetFolder}/${item.name}`.replace(/\/[/]+/g, '/')
     } else if (isParent) {
-        target = `/${parent(mediaStore.folderTree.source)}/${targetFolder.name}/${itemData.name}`.replace(
+        target = `/${parent(mediaStore.folderTree.source)}/${targetFolder.name}/${item.name}`.replace(
             /\/[/]+/g,
             '/',
         )
     } else {
-        target = `/${mediaStore.folderTree.source}/${targetFolder.name}/${itemData.name}`.replace(/\/[/]+/g, '/')
+        target = `/${mediaStore.folderTree.source}/${targetFolder.name}/${item.name}`.replace(/\/[/]+/g, '/')
     }
 
     event.target.style.fontWeight = null
@@ -308,7 +330,8 @@ function onFileChange(evt: any) {
 async function uploadFiles(upl: boolean) {
     if (upl) {
         await authStore.inspectToken()
-        lastPath.value = mediaStore.folderTree.source
+        const targetPath = pendingUploadPath.value ?? mediaStore.crumbs[mediaStore.crumbs.length - 1]?.path ?? ''
+        lastPath.value = targetPath
 
         const filesToUpload = Array.from(inputFiles.value).filter((file) => {
             if (mediaStore.folderTree.files.find((f) => f.name === file.name)) {
@@ -322,7 +345,7 @@ async function uploadFiles(upl: boolean) {
             await uploadFilesComposable(filesToUpload, {
                 buildRequest: (_file, currentIndex, batchCount) => ({
                     url: `/api/file/${configStore.channels[configStore.i]?.id}/upload?path=${encodeURIComponent(
-                        mediaStore.crumbs[mediaStore.crumbs.length - 1]?.path ?? '',
+                        targetPath,
                     )}`,
                     headers: authStore.authHeader,
                     method: 'PUT',
@@ -335,45 +358,90 @@ async function uploadFiles(upl: boolean) {
         }
 
         uploadTask.value = 'Done...'
-        mediaStore.getTree(lastPath.value)
+
+        if (targetPath === mediaStore.currentPath) {
+            mediaStore.getTree(lastPath.value)
+        }
+
+        mediaStore.treeVersion += 1
 
         setTimeout(() => {
             fileInputName.value = null
             inputFiles.value = []
+            pendingUploadPath.value = null
             resetUploadState()
             showUploadModal.value = false
         }, 1500)
     } else {
         fileInputName.value = null
         inputFiles.value = []
+        pendingUploadPath.value = null
         resetUploadState()
         showUploadModal.value = false
+    }
+}
+
+async function dropUploadFiles(files: File[] | FileList, targetPath: string) {
+    const accepted = Array.from(files).filter((file) =>
+        extensionsArr.value.some((ext) => file.name.toLowerCase().endsWith(ext.toLowerCase())),
+    )
+
+    if (!accepted.length) {
+        indexStore.msgAlert('warning', t('media.uploadError'), 3)
+
+        return
+    }
+
+    pendingUploadPath.value = targetPath
+    inputFiles.value = accepted
+    showUploadModal.value = true
+    uploadTask.value = t('media.uploading')
+    await uploadFiles(true)
+}
+
+function onPaneDrop(event: DragEvent) {
+    if (event.dataTransfer?.files?.length) {
+        dropUploadFiles(event.dataTransfer.files, mediaStore.currentPath)
     }
 }
 </script>
 <template>
     <div>
         <div class="h-[calc(100vh-140px)] px-2">
-            <nav class="text-sm breadcrumbs px-3">
-                <ul @dragover.prevent>
-                    <li
-                        v-for="(crumb, index) in mediaStore.crumbs"
-                        :key="index"
-                        @drop="handleDrop($event, crumb.path, null)"
-                        @dragover="handleDragOver"
-                        @dragleave="handleDragLeave"
-                    >
-                        <button
-                            v-if="mediaStore.crumbs.length > 1 && mediaStore.crumbs.length - 1 > index"
-                            @click="mediaStore.getTree(crumb.path)"
+            <div class="flex items-center">
+                <nav class="text-sm breadcrumbs px-3 flex-1">
+                    <ul @dragover.prevent>
+                        <li
+                            v-for="(crumb, index) in mediaStore.crumbs"
+                            :key="index"
+                            @drop="handleDrop($event, crumb.path, null)"
+                            @dragover="handleDragOver"
+                            @dragleave="handleDragLeave"
                         >
-                            <i class="bi-folder-fill me-1" />
-                            {{ crumb.text }}
-                        </button>
-                        <span v-else><i class="bi-folder-fill me-1" /> {{ crumb.text }}</span>
-                    </li>
-                </ul>
-            </nav>
+                            <button
+                                v-if="mediaStore.crumbs.length > 1 && mediaStore.crumbs.length - 1 > index"
+                                @click="mediaStore.getTree(crumb.path)"
+                            >
+                                <i class="bi-folder-fill me-1" />
+                                {{ crumb.text }}
+                            </button>
+                            <span v-else><i class="bi-folder-fill me-1" /> {{ crumb.text }}</span>
+                        </li>
+                    </ul>
+                </nav>
+                <button
+                    class="btn btn-sm btn-ghost px-2 me-2"
+                    :title="t('media.pinFolder')"
+                    @click="mediaStore.togglePreferredFolder(mediaStore.currentPath)"
+                >
+                    <i
+                        class="bi"
+                        :class="
+                            mediaStore.isPreferred(mediaStore.currentPath) ? 'bi-star-fill text-warning' : 'bi-star'
+                        "
+                    />
+                </button>
+            </div>
 
             <div class="relative h-[calc(100%-34px)] min-h-75 bg-base-100">
                 <div v-if="mediaStore.isLoading" class="w-full h-full absolute z-10 flex justify-center bg-base-100/70">
@@ -387,64 +455,23 @@ async function uploadFiles(upl: boolean) {
                         class="h-full bg-base-300"
                         :class="horizontal ? 'rounded-t' : 'rounded-s'"
                     >
-                        <div class="relative h-full overflow-y-auto">
-                            <table
-                                v-if="mediaStore.folderTree.parent"
-                                class="table table-zebra table-fixed"
-                                @dragover.prevent
-                            >
-                                <tbody>
-                                    <template v-if="mediaStore.folderTree.parent_folders.length > 0">
-                                        <tr
-                                            v-for="folder in mediaStore.folderTree.parent_folders"
-                                            :key="folder.uid"
-                                            class="grid grid-cols-[auto] border-b border-base-content/20"
-                                            :class="
-                                                filename(mediaStore.folderTree.source) === folder.name &&
-                                                'bg-secondary! text-black'
-                                            "
-                                            @drop="handleDrop($event, folder, true)"
-                                            @dragover="handleDragOver"
-                                            @dragleave="handleDragLeave"
-                                        >
-                                            <td class="px-2 py-1.5 truncate">
-                                                <a
-                                                    class="cursor-pointer"
-                                                    @click="
-                                                        mediaStore.getTree(
-                                                            `/${parent(mediaStore.folderTree.source)}/${folder.name}`,
-                                                        )
-                                                    "
-                                                >
-                                                    <i class="bi-folder-fill" />
-                                                    {{ folder.name }}
-                                                </a>
-                                            </td>
-                                        </tr>
-                                    </template>
-
-                                    <tr v-else>
-                                        <td class="px-2 py-1.5 border-b border-base-content/20">
-                                            <i class="bi-folder-fill" />
-                                            {{ mediaStore.folderTree.parent }}
-                                        </td>
-                                    </tr>
-                                </tbody>
-                            </table>
-                        </div>
+                        <MediaTree :drop-files="dropUploadFiles" />
                     </Pane>
                     <Pane class="h-full bg-base-300!" :class="horizontal ? 'rounded-b' : 'rounded-e'">
-                        <div class="relative h-full overflow-y-auto">
+                        <div
+                            class="relative h-full overflow-y-auto"
+                            @drop="onPaneDrop"
+                            @dragover.prevent
+                        >
                             <table
                                 v-if="mediaStore.folderTree.parent"
                                 class="table table-zebra table-fixed"
-                                @dragover.prevent
                             >
                                 <tbody>
                                     <tr
                                         v-for="folder in mediaStore.folderTree.folders"
                                         :key="folder.uid"
-                                        class="grid grid-cols-[auto_64px] border-b border-base-content/20"
+                                        class="grid grid-cols-[auto_92px] border-b border-base-content/20"
                                         @drop="handleDrop($event, folder, false)"
                                         @dragover="handleDragOver"
                                         @dragleave="handleDragLeave"
@@ -463,6 +490,32 @@ async function uploadFiles(upl: boolean) {
                                             </a>
                                         </td>
                                         <td class="ps-2 pe-3.5 py-1.5 flex justify-end gap-2">
+                                            <button
+                                                class="cursor-pointer"
+                                                :title="t('media.pinFolder')"
+                                                @click="
+                                                    mediaStore.togglePreferredFolder(
+                                                        `/${mediaStore.folderTree.source}/${folder.name}`.replace(
+                                                            /\/[/]+/g,
+                                                            '/',
+                                                        ),
+                                                    )
+                                                "
+                                            >
+                                                <i
+                                                    class="bi"
+                                                    :class="
+                                                        mediaStore.isPreferred(
+                                                            `/${mediaStore.folderTree.source}/${folder.name}`.replace(
+                                                                /\/[/]+/g,
+                                                                '/',
+                                                            ),
+                                                        )
+                                                            ? 'bi-star-fill text-warning'
+                                                            : 'bi-star opacity-40 hover:opacity-100'
+                                                    "
+                                                />
+                                            </button>
                                             <button
                                                 class="opacity-30 hover:opacity-100 cursor-pointer"
                                                 @click="
@@ -573,7 +626,7 @@ async function uploadFiles(upl: boolean) {
                     <button
                         class="btn btn-sm btn-primary join-item"
                         :title="t('media.upload')"
-                        @click="showUploadModal = true"
+                        @click=";((pendingUploadPath = null), (showUploadModal = true))"
                     >
                         <i class="bi-upload" />
                     </button>

@@ -283,6 +283,12 @@ export default {
         uploadError: 'Ошибка Загрузки',
         fileExists: 'Файл уже имеется!',
         recursive: 'Рекурсивный',
+        quickAccess: 'Быстрый доступ',
+        quickAccessHint: 'Закрепите папки значком звезды для быстрого доступа.',
+        pinFolder: 'Закрепить в быстром доступе',
+        unpinFolder: 'Убрать из быстрого доступа',
+        folderTree: 'Дерево папок',
+        folderList: 'Список папок',
     },
     message: {
         savePreset: 'Сохранить шаблон',

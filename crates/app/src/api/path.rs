@@ -58,6 +58,12 @@ pub fn routes() -> Router<AppState> {
                 )
                 .route("/file/{id}/import", put(import_playlist))
                 .route("/file/{id}/access-token", post(create_file_access_token))
+                .route(
+                    "/file/{id}/favorites",
+                    get(get_media_favorites)
+                        .post(add_media_favorite)
+                        .delete(remove_media_favorite),
+                )
                 .route("/log/{id}", get(get_log))
                 .route("/playlist/{id}", get(get_playlist))
                 .route("/playlist/{id}", post(save_playlist))

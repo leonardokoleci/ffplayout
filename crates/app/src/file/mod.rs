@@ -25,6 +25,14 @@ pub struct PathObject {
     pub folders_only: bool,
     #[serde(default)]
     pub recursive: bool,
+    /// Probe ffprobe durations for the file list. Disable for fast listings
+    /// that only need file names (durations default to 0.0).
+    #[serde(default = "default_true")]
+    pub with_duration: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl PathObject {
@@ -37,6 +45,7 @@ impl PathObject {
             files: Some(vec![]),
             folders_only: false,
             recursive: false,
+            with_duration: true,
         }
     }
 }

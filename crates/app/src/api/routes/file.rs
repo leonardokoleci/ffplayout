@@ -18,7 +18,7 @@ use crate::{
         routes::{AuthUser, FileObj, ImportObj, ensure_any_authority, stream_file},
         state::AppState,
     },
-    db::models::Role,
+    db::{handles, models::Role},
     file::{
         MoveObject, PathObject, UploadStatus, UploadStatusQuery, norm_abs_path,
         selection::{BrowseRequest, Listing, SelectionMediaInfo},
@@ -36,6 +36,11 @@ pub struct FileQuery {
 #[derive(Debug, Deserialize)]
 pub struct FileAccessRequest {
     filename: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MediaFavoriteRequest {
+    path: String,
 }
 
 /// ### File Operations
@@ -309,6 +314,105 @@ pub async fn create_file_access_token(
     tokens.insert(access_data);
 
     Ok(Json(response))
+}
+
+/// **Get pinned media folders (Quick Access)**
+///
+/// Returns the paths of the folders the current user has pinned for
+/// quick access in the media browser, for the given channel.
+///
+/// ```BASH
+/// curl -X GET http://127.0.0.1:8787/api/file/1/favorites -H 'Authorization: Bearer <TOKEN>'
+/// ```
+pub async fn get_media_favorites(
+    State(state): State<AppState>,
+    Path(id): Path<i32>,
+    user: AuthUser,
+    details: AuthDetails<Role>,
+) -> Result<Json<Vec<String>>, ServiceError> {
+    ensure_any_authority(
+        &details,
+        &[&Role::GlobalAdmin, &Role::ChannelAdmin, &Role::User],
+    )?;
+    user.ensure_channel_or_admin(id)?;
+
+    let paths = handles::select_media_favorites(&state.pool, user.id, id).await?;
+
+    Ok(Json(paths))
+}
+
+/// **Pin a media folder for Quick Access**
+///
+/// The folder must exist inside the channel storage. Pinning is
+/// per user and channel.
+///
+/// ```BASH
+/// curl -X POST http://127.0.0.1:8787/api/file/1/favorites -H 'Content-Type: application/json'
+/// -d '{"path": "/subfolder"}' -H 'Authorization: Bearer <TOKEN>'
+/// ```
+pub async fn add_media_favorite(
+    State(state): State<AppState>,
+    Path(id): Path<i32>,
+    user: AuthUser,
+    details: AuthDetails<Role>,
+    Json(data): Json<MediaFavoriteRequest>,
+) -> Result<StatusCode, ServiceError> {
+    ensure_any_authority(
+        &details,
+        &[&Role::GlobalAdmin, &Role::ChannelAdmin, &Role::User],
+    )?;
+    user.ensure_channel_or_admin(id)?;
+
+    let manager = {
+        let guard = state.controller.read().await;
+        guard.get(id)
+    }
+    .ok_or_else(|| ServiceError::BadRequest(format!("Channel {id} not found!")))?;
+
+    let config = manager.config.read().await;
+    let storage = config.channel.storage.clone();
+    drop(config);
+
+    let (path, _, _) = norm_abs_path(&storage, &data.path)?;
+    let metadata = match fs::metadata(&path).await {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Err(ServiceError::BadRequest("Folder not found".to_string()));
+        }
+        Err(error) => return Err(error.into()),
+    };
+
+    if !metadata.is_dir() {
+        return Err(ServiceError::BadRequest("Path is not a folder".to_string()));
+    }
+
+    handles::insert_media_favorite(&state.pool, user.id, id, &data.path).await?;
+
+    Ok(StatusCode::OK)
+}
+
+/// **Unpin a media folder**
+///
+/// ```BASH
+/// curl -X DELETE http://127.0.0.1:8787/api/file/1/favorites -H 'Content-Type: application/json'
+/// -d '{"path": "/subfolder"}' -H 'Authorization: Bearer <TOKEN>'
+/// ```
+pub async fn remove_media_favorite(
+    State(state): State<AppState>,
+    Path(id): Path<i32>,
+    user: AuthUser,
+    details: AuthDetails<Role>,
+    Json(data): Json<MediaFavoriteRequest>,
+) -> Result<StatusCode, ServiceError> {
+    ensure_any_authority(
+        &details,
+        &[&Role::GlobalAdmin, &Role::ChannelAdmin, &Role::User],
+    )?;
+    user.ensure_channel_or_admin(id)?;
+
+    handles::delete_media_favorite(&state.pool, user.id, id, &data.path).await?;
+
+    Ok(StatusCode::OK)
 }
 
 /// **Get File**

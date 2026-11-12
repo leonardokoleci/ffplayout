@@ -1,143 +1,89 @@
 <script setup lang="ts">
-import VirtualList from 'vue-virtual-sortable'
-
-import { ref, onMounted, watch } from 'vue'
-import { useWindowSize } from '@vueuse/core'
+import { ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { storeToRefs } from 'pinia'
 
-import { stringFormatter } from '@/composables/helper'
 import { useConfig } from '@/stores/config'
 import { useMedia } from '@/stores/media'
 
-const { width } = useWindowSize({ initialWidth: 800 })
-const { secToHMS, mediaType } = stringFormatter()
+import MediaTree from '@/components/media/MediaTree.vue'
+import MediaBrowseList from '@/components/media/MediaBrowseList.vue'
 
-const configStore = useConfig()
+const { t } = useI18n()
+
+defineProps<{
+    preview?: (path: string) => Promise<void> | void
+}>()
+
 const mediaStore = useMedia()
 const { i } = storeToRefs(useConfig())
 
-const dragGroup = ref({ name: 'dragGroup', pull: 'clone', put: false })
+// Pane visibility is a user choice and survives reloads; both views can be
+// hidden, leaving only the quick access list.
+const showTree = ref(localStorage.getItem('ffplayout_media_browser_tree') !== '0')
+const showList = ref(localStorage.getItem('ffplayout_media_browser_list') !== '0')
 
-defineProps({
-    preview: {
-        type: Function,
-        default() {
-            return ''
-        },
+function toggleTree() {
+    showTree.value = !showTree.value
+    localStorage.setItem('ffplayout_media_browser_tree', showTree.value ? '1' : '0')
+}
+
+function toggleList() {
+    showList.value = !showList.value
+    localStorage.setItem('ffplayout_media_browser_list', showList.value ? '1' : '0')
+}
+
+// The browse list follows the folder selected in the tree: every tree path
+// change (folder click, quick access, breadcrumb) loads its listing.
+watch(
+    [showList, () => mediaStore.treePath],
+    ([list, path]) => {
+        if (list) {
+            mediaStore.getTree(path)
+        }
     },
-})
-
-onMounted(async () => {
-    if (!mediaStore.folderTree.parent || !mediaStore.currentPath) {
-        await mediaStore.getTree('')
-    }
-})
+    { immediate: true },
+)
 
 watch([i], () => {
-    mediaStore.getTree('')
+    mediaStore.getTree(mediaStore.treePath)
 })
 </script>
+
 <template>
-    <div class="h-full">
+    <div class="h-full flex flex-col relative bg-base-300">
         <div v-if="mediaStore.isLoading" class="h-full w-full absolute z-10 flex justify-center bg-base-100/70">
             <span class="loading loading-spinner loading-lg" />
         </div>
-        <div class="bg-base-100 border-b border-base-content/30">
-            <div v-if="mediaStore.folderTree.parent && mediaStore.crumbs">
-                <nav class="breadcrumbs px-2 py-1.5">
-                    <ul>
-                        <li v-for="(crumb, index) in mediaStore.crumbs" :key="index">
-                            <button
-                                v-if="mediaStore.crumbs.length > 1 && mediaStore.crumbs.length - 1 > index"
-                                class="flex items-center"
-                                @click="mediaStore.getTree(crumb.path)"
-                            >
-                                <i class="bi-folder-fill me-1" />
-                                <span class="text-xs font-bold text-base-content/60 leading-tight">
-                                    {{ crumb.text }}
-                                </span>
-                            </button>
-                            <div v-else class="flex items-center">
-                                <i class="bi-folder-fill me-1" />
-                                <span class="text-xs font-bold text-base-content/60">{{ crumb.text }}</span>
-                            </div>
-                        </li>
-                    </ul>
-                </nav>
-            </div>
+
+        <div class="shrink-0 flex items-center justify-end gap-1 px-1 pt-1">
+            <button
+                class="btn btn-xs"
+                :class="showTree ? 'btn-primary' : 'btn-ghost'"
+                :title="t('media.folderTree')"
+                @click="toggleTree"
+            >
+                <i class="bi-diagram-3" />
+            </button>
+            <button
+                class="btn btn-xs"
+                :class="showList ? 'btn-primary' : 'btn-ghost'"
+                :title="t('media.folderList')"
+                @click="toggleList"
+            >
+                <i class="bi-list-ul" />
+            </button>
         </div>
 
-        <div class="w-full h-[calc(100%-40px)]">
-            <VirtualList
-                v-if="mediaStore.folderTree.files.length > 0 || mediaStore.folderTree.folders.length > 0"
-                id="mediaList"
-                v-model="mediaStore.folderTree.files"
-                class="w-full h-full"
-                :handle="'.handle'"
-                :group="dragGroup"
-                :data-key="'name'"
-                ghost-class="sortable-ghost"
-                wrap-tag="ul"
-                wrap-class="list-none text-sm"
-                chosen-class="cursor-grabbing"
-                placeholder-class="media-placeholder"
-                :animation="50"
-                :sortable="false"
-            >
-                <template #header>
-                    <ul class="border-b border-base-content/20 list-none text-sm">
-                        <li
-                            v-for="folder in mediaStore.folderTree.folders"
-                            :key="folder.uid"
-                            class="grid grid-cols-[30px_auto] even:bg-base-200 py-1.5 items-center cursor-pointer"
-                            @click="mediaStore.getTree(`/${mediaStore.folderTree.source}/${folder.name}`)"
-                        >
-                            <div class="px-2">
-                                <i class="bi-folder-fill" />
-                            </div>
-                            <div class="truncate pe-1">
-                                {{ folder.name }}
-                            </div>
-                        </li>
-                    </ul>
-                </template>
-                <template #item="{ item, index }">
-                    <li
-                        :id="`file-${index}`"
-                        :key="item.name"
-                        class="grid grid-cols-[30px_auto_32px_62px] border-b border-base-content/20 py-1.5 items-center"
-                        :class="mediaStore.folderTree.folders.length % 2 === 0 ? 'even:bg-base-200' : 'odd:bg-base-200'"
-                    >
-                        <div class="px-2" :class="{ timeHidden: configStore.playout.playlist.infinit }">
-                            <i v-if="mediaType(item.name) === 'audio'" class="bi-music-note-beamed" />
-                            <i v-else-if="mediaType(item.name) === 'video'" class="bi-film" />
-                            <i v-else-if="mediaType(item.name) === 'image'" class="bi-file-earmark-image" />
-                            <i v-else class="bi-file-binary" />
-                        </div>
-                        <div
-                            class="truncate"
-                            :class="{
-                                'handle cursor-grab': width > 739 && configStore.playout.processing.mode === 'playlist',
-                            }"
-                        >
-                            {{ item.name }}
-                        </div>
-                        <div class="text-center leading-3">
-                            <button class="cursor-pointer" @click="preview(item.name)">
-                                <i class="bi-play-fill" />
-                            </button>
-                        </div>
-                        <div class="text-nowrap">
-                            {{ secToHMS(item.duration) }}
-                        </div>
-                        <div class="hidden">00:00:00</div>
-                        <div class="hidden">{{ secToHMS(item.duration) }}</div>
-                        <div class="hidden">&nbsp;</div>
-                        <div class="hidden">&nbsp;</div>
-                        <div class="hidden">&nbsp;</div>
-                    </li>
-                </template>
-            </VirtualList>
+        <div class="flex-1 min-h-0 flex flex-col">
+            <!-- Quick access is always rendered by MediaTree, only the tree part is toggleable -->
+            <MediaTree
+                compact
+                :show-tree="showTree"
+                :preview="preview"
+                :class="showTree ? 'flex-1 min-h-0' : 'shrink-0'"
+            />
+            <MediaBrowseList v-if="showList" :preview="preview" class="flex-1 min-h-0" />
         </div>
     </div>
 </template>

@@ -24,6 +24,7 @@ dayjs.extend(utc)
 
 import { stringFormatter, playlistOperations } from '@/composables/helper'
 import { scheduledRowIndex } from '@/composables/livePlaylistSchedule'
+import { authFetch } from '@/composables/authFetch'
 import { useConfig } from '@/stores/config'
 import { useMedia } from '@/stores/media'
 import { usePlaylist } from '@/stores/playlist'
@@ -146,7 +147,8 @@ function dropItem(event: any) {
     if (event.event.from.id === 'mediaList') {
         const media = event.item
         const storagePath = configStore.channels[configStore.i]?.storage
-        const sourcePath = `${storagePath}/${mediaStore.folderTree.source}/${media.name}`.replace(/\/[/]+/g, '/')
+        const sourcePath =
+            media.source ?? `${storagePath}/${mediaStore.folderTree.source}/${media.name}`.replace(/\/[/]+/g, '/')
         const uid = genUID()
 
         const mediaObject = {
@@ -160,6 +162,10 @@ function dropItem(event: any) {
         }
 
         playlistStore.playlist[nIndex] = mediaObject
+
+        if (!media.duration) {
+            fetchMediaDuration(mediaObject)
+        }
 
         nextTick(() => {
             const newNode = document.getElementById(uid)
@@ -177,6 +183,28 @@ function dropItem(event: any) {
             sortContainer.value.scrollToBottom()
         }
     })
+}
+
+// Fast tree listings skip ffprobe, so dropped clips start with a default
+// duration and get the real one filled in as soon as it is known.
+async function fetchMediaDuration(item: any) {
+    const channel = configStore.channels[configStore.i]?.id
+
+    try {
+        const info = await authFetch<{ duration: number }>(`/api/file/${channel}/media-info`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ source: item.source }),
+        })
+
+        if (info.duration && playlistStore.playlist.includes(item)) {
+            item.duration = info.duration
+            item.out = info.duration
+            processPlaylist(listDate.value, playlistStore.playlist, false)
+        }
+    } catch {
+        // Keep the default duration when the probe fails.
+    }
 }
 
 function deletePlaylistItem(index: number) {

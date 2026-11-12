@@ -283,6 +283,12 @@ export default {
         uploadError: 'Erro ao carregar',
         fileExists: 'O arquivo já existe!',
         recursive: 'Recursivo',
+        quickAccess: 'Acesso rápido',
+        quickAccessHint: 'Fixe pastas com o ícone de estrela para acesso rápido.',
+        pinFolder: 'Fixar no acesso rápido',
+        unpinFolder: 'Remover do acesso rápido',
+        folderTree: 'Árvore de pastas',
+        folderList: 'Lista de pastas',
     },
     message: {
         savePreset: 'Salvar predefinição',

@@ -28,21 +28,39 @@ export default defineConfig({
         },
     },
     server: {
-        host: '127.0.0.1',
+        host: process.env.FFPLAYOUT_DEV_HOST || '127.0.0.1',
         port: 5757,
+        // Polling is needed when source is bind-mounted into a container,
+        // because file-change events from Windows/Docker Desktop do not
+        // propagate reliably.
+        watch: {
+            usePolling: process.env.FFPLAYOUT_DOCKER === '1',
+        },
         proxy: {
             // /moq/player is a Vue route; proxy only bootstrap and media traffic.
             // Authenticated bootstrap (/api/moq/config) uses the /api proxy below.
-            '/moq/config': { target: 'http://127.0.0.1:8787', changeOrigin: true },
-            '/moq/relay': { target: 'http://127.0.0.1:8787', changeOrigin: true, ws: true },
-            '/api': { target: 'http://127.0.0.1:8787', changeOrigin: true },
-            '/auth': { target: 'http://127.0.0.1:8787', changeOrigin: true },
-            '/data': { target: 'http://127.0.0.1:8787', changeOrigin: true },
-            '/live': { target: 'http://127.0.0.1:8787', changeOrigin: true },
-            '/1/live': { target: 'http://127.0.0.1:8787', changeOrigin: true },
-            '/public': { target: 'http://127.0.0.1:8787', changeOrigin: true },
-            '/file': { target: 'http://127.0.0.1:8787', changeOrigin: true },
-            '/hls': { target: 'http://127.0.0.1:8787', changeOrigin: true },
+            ...(Object.fromEntries(
+                [
+                    '/moq/config',
+                    '/moq/relay',
+                    '/api',
+                    '/auth',
+                    '/data',
+                    '/live',
+                    '/1/live',
+                    '/public',
+                    '/file',
+                    '/hls',
+                ].map((route) => [
+                    route,
+                    { target: process.env.FFPLAYOUT_PROXY_TARGET || 'http://127.0.0.1:8787', changeOrigin: true },
+                ]),
+            ) as Record<string, { target: string; changeOrigin: boolean }>),
+            '/moq/relay': {
+                target: process.env.FFPLAYOUT_PROXY_TARGET || 'http://127.0.0.1:8787',
+                changeOrigin: true,
+                ws: true,
+            },
         },
     },
 })

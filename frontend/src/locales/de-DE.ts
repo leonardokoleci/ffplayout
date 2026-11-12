@@ -282,6 +282,12 @@ export default {
         uploadError: 'Fehler beim Hochladen',
         fileExists: 'Datei existiert bereits!',
         recursive: 'Rekursiv',
+        quickAccess: 'Schnellzugriff',
+        quickAccessHint: 'Hefte Ordner mit dem Stern-Symbol für den Schnellzugriff an.',
+        pinFolder: 'Zum Schnellzugriff hinzufügen',
+        unpinFolder: 'Aus dem Schnellzugriff entfernen',
+        folderTree: 'Ordnerbaum',
+        folderList: 'Ordnerliste',
     },
     message: {
         savePreset: 'Voreinstellung speichern',

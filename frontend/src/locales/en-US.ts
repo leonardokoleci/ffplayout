@@ -280,6 +280,12 @@ export default {
         uploadError: 'Upload error',
         fileExists: 'File exists already!',
         recursive: 'Recursive',
+        quickAccess: 'Quick Access',
+        quickAccessHint: 'Pin folders with the star icon for quick access.',
+        pinFolder: 'Pin to Quick Access',
+        unpinFolder: 'Remove from Quick Access',
+        folderTree: 'Folder tree',
+        folderList: 'Folder list',
     },
     message: {
         savePreset: 'Save Preset',
