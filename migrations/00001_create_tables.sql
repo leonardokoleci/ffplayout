@@ -185,7 +185,7 @@ VALUES
     (
         1,
         'Channel 1',
-        'http://127.0.0.1:8787/public/1/live/stream.m3u8',
+        '/public/1/live/stream.m3u8',
         'jpg,jpeg,png',
         0
     );

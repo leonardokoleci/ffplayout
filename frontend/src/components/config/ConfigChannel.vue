@@ -8,7 +8,6 @@ import { isEqual } from 'es-toolkit/predicate'
 import { cloneDeep } from 'es-toolkit/object'
 
 import GenericModal from '@/components/utils/GenericModal.vue'
-import SvgIcon from '@/components/utils/SvgIcon.vue'
 
 import { authFetch } from '@/composables/authFetch'
 import { useAuth } from '@/stores/auth'
@@ -55,10 +54,9 @@ function rmId(path: string) {
 function newChannel() {
     channel.value.id = configStore.channels.length + 1
     channel.value.name = `Channel ${channel.value.id}`
-    channel.value.preview_url = `${window.location.protocol}//${window.location.host}/public/${channel.value.id}/live/master.m3u8`
+    channel.value.preview_url = `/public/${channel.value.id}/live/master.m3u8`
     channel.value.public = `${rmId(channel.value.public)}/${channel.value.id}`
     channel.value.playlists = `${rmId(channel.value.playlists)}/${channel.value.id}`
-    channel.value.storage = `${rmId(channel.value.storage)}/${channel.value.id}`
     channel.value.timezone = dayjs.tz.guess()
 
     saved.value = false
@@ -228,12 +226,6 @@ async function deleteChannel() {
             </fieldset>
 
             <template v-if="authStore.role === 'global_admin'">
-                <div v-if="configStore.playout.storage.shared_storage" class="font-bold h-3 mt-3">
-                    <p>
-                        <SvgIcon name="warning" classes="inline mr-2" />
-                        <span>{{ t('config.sharedStorage') }}</span>
-                    </p>
-                </div>
                 <fieldset class="fieldset">
                     <legend class="fieldset-legend">{{ t('config.publicPath') }}</legend>
                     <input
@@ -251,17 +243,6 @@ async function deleteChannel() {
                         v-model="channel.playlists"
                         type="text"
                         name="playlists"
-                        class="input w-full focus:border-base-content/30 focus:outline-base-content/30"
-                        @keyup="isChanged"
-                    />
-                </fieldset>
-
-                <fieldset class="fieldset">
-                    <legend class="fieldset-legend">{{ t('config.storagePath') }}</legend>
-                    <input
-                        v-model="channel.storage"
-                        type="text"
-                        name="storage"
                         class="input w-full focus:border-base-content/30 focus:outline-base-content/30"
                         @keyup="isChanged"
                     />

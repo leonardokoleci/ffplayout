@@ -94,7 +94,6 @@ export const useConfig = defineStore('config', {
                             preview_url: '',
                             public: '',
                             playlists: '',
-                            storage: '',
                         },
                     ]
 

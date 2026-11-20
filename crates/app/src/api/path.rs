@@ -1,7 +1,7 @@
 use axum::{
     Router,
     extract::DefaultBodyLimit,
-    routing::{delete, get, post, put},
+    routing::{delete, get, patch, post, put},
 };
 
 use crate::{
@@ -44,6 +44,7 @@ pub fn routes() -> Router<AppState> {
                 .route("/control/{id}/ingest", put(select_live_input))
                 .route("/control/{id}/media/current", get(media_current))
                 .route("/control/{id}/process", post(process_control))
+                .route("/file/{id}/drives", get(get_drives))
                 .route("/file/{id}/browse", post(file_browser))
                 .route("/file/{id}/browse-selection", post(browse_selection))
                 .route("/file/{id}/media-info", post(selection_media_info))
@@ -87,6 +88,16 @@ pub fn routes() -> Router<AppState> {
                 )
                 .route("/presets/{id}", post(add_preset))
                 .route("/program/{id}", get(get_program))
+                .route("/rundown/{id}", get(get_rundown))
+                .route("/rundown/{id}/probe", post(probe_rundown))
+                .route("/rundown/{id}/queue", post(replace_rundown_queue))
+                .route("/rundown/{id}/item", post(add_rundown_item))
+                .route(
+                    "/rundown/{id}/item/{item_id}",
+                    patch(edit_rundown_item).delete(delete_rundown_item),
+                )
+                .route("/rundown/{id}/move", post(move_rundown_item))
+                .route("/rundown/{id}/jump", post(jump_rundown_item))
                 .route("/setup", get(get_setup_status).post(complete_setup))
                 .route("/system/{id}", get(get_system_stat))
                 .route("/user", get(get_user))

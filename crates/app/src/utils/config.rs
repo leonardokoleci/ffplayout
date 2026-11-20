@@ -16,7 +16,6 @@ use ts_rs::TS;
 use crate::{
     ARGS,
     db::{handles, models},
-    file::norm_abs_path,
     utils::{errors::ServiceError, paths::validate_directory_path, time_to_sec},
 };
 
@@ -122,12 +121,14 @@ pub enum ProcessMode {
     Folder,
     #[default]
     Playlist,
+    Rundown,
 }
 
 impl ProcessMode {
     fn new(s: &str) -> Self {
         match s {
             "folder" => Self::Folder,
+            "rundown" => Self::Rundown,
             _ => Self::Playlist,
         }
     }
@@ -138,6 +139,7 @@ impl fmt::Display for ProcessMode {
         match *self {
             ProcessMode::Folder => write!(f, "folder"),
             ProcessMode::Playlist => write!(f, "playlist"),
+            ProcessMode::Rundown => write!(f, "rundown"),
         }
     }
 }
@@ -149,7 +151,8 @@ impl FromStr for ProcessMode {
         match input {
             "folder" => Ok(Self::Folder),
             "playlist" => Ok(Self::Playlist),
-            _ => Err("Use 'folder' or 'playlist'".to_string()),
+            "rundown" => Ok(Self::Rundown),
+            _ => Err("Use 'folder', 'playlist' or 'rundown'".to_string()),
         }
     }
 }
@@ -323,7 +326,6 @@ pub struct Channel {
     pub logs: PathBuf,
     pub public: PathBuf,
     pub playlists: PathBuf,
-    pub storage: PathBuf,
     pub shared: bool,
     #[ts(type = "string")]
     pub timezone: Option<Tz>,
@@ -335,7 +337,6 @@ impl Channel {
             logs: PathBuf::from(config.logs.clone()),
             public: PathBuf::from(channel.public.clone()),
             playlists: PathBuf::from(channel.playlists.clone()),
-            storage: PathBuf::from(channel.storage.clone()),
             shared: config.shared,
             timezone: channel.timezone,
         }
@@ -618,6 +619,9 @@ pub struct Processing {
     pub logo_high_quality: bool,
     #[serde(default = "default_graphics_cache_mib")]
     pub graphics_cache_mib: u32,
+    /// Optional path to the headless browser executable used by HTML graphics.
+    #[serde(default)]
+    pub graphics_browser: Option<String>,
     #[serde(default)]
     pub vtt_enable: bool,
     #[serde(default)]
@@ -642,6 +646,7 @@ impl Default for Processing {
             logo_position: String::new(),
             logo_high_quality: true,
             graphics_cache_mib: 128,
+            graphics_browser: None,
             vtt_enable: false,
             vtt_dummy: None,
             vtt_name: String::new(),
@@ -679,6 +684,7 @@ impl Processing {
             logo_position: config.processing_logo_position.clone(),
             logo_high_quality: config.processing_logo_high_quality,
             graphics_cache_mib: config.processing_graphics_cache_mib,
+            graphics_browser: config.processing_graphics_browser.clone(),
             vtt_enable: config.processing_vtt_enable,
             vtt_dummy: config.processing_vtt_dummy.clone(),
             vtt_name: config.processing_vtt_name.clone(),
@@ -920,9 +926,9 @@ impl Playlist {
 #[derive(Debug, Default, Clone, Deserialize, Serialize, TS)]
 #[ts(export, export_to = "playout_config.d.ts")]
 pub struct Storage {
-    #[ts(skip)]
-    #[serde(skip_serializing, skip_deserializing)]
-    pub path: PathBuf,
+    /// Additional media source folders for folder mode and the playlist
+    /// generator. Media is browsed directly from any disk, so these are
+    /// absolute paths.
     #[ts(skip)]
     #[serde(skip_serializing, skip_deserializing)]
     pub paths: Vec<PathBuf>,
@@ -932,24 +938,22 @@ pub struct Storage {
     pub filler_path: PathBuf,
     pub extensions: Vec<String>,
     pub shuffle: bool,
-    #[serde(skip_deserializing)]
-    pub shared_storage: bool,
 }
 
 impl Storage {
-    fn new(config: &models::Configuration, path: PathBuf, shared_storage: bool) -> Self {
+    fn new(config: &models::Configuration) -> Self {
+        let filler_path = PathBuf::from(config.storage_filler.trim());
+
         Self {
-            path,
             paths: vec![],
             filler: config.storage_filler.clone(),
-            filler_path: PathBuf::from(config.storage_filler.clone()),
+            filler_path,
             extensions: config
                 .storage_extensions
                 .split(';')
                 .map(String::from)
                 .collect(),
             shuffle: config.storage_shuffle,
-            shared_storage,
         }
     }
 }
@@ -1643,7 +1647,7 @@ impl PlayoutConfig {
         };
         let output = Output::new(&config, outputs);
         let program = handles::output::select_program_format(pool, config.id).await?;
-        let mut storage = Storage::new(&config, channel.storage.clone(), channel.shared);
+        let mut storage = Storage::new(&config);
 
         if !channel.playlists.is_dir() {
             fs::create_dir_all(&channel.playlists).await?;
@@ -1653,10 +1657,10 @@ impl PlayoutConfig {
             fs::create_dir_all(&channel.logs).await?;
         }
 
-        let (filler_path, _, filler) = norm_abs_path(&channel.storage, &config.storage_filler)?;
+        let filler_source = config.storage_filler.trim().to_string();
 
-        storage.filler = filler;
-        storage.filler_path = filler_path;
+        storage.filler = filler_source.clone();
+        storage.filler_path = PathBuf::from(filler_source);
 
         playlist.start_sec = Some(time_to_sec(&playlist.day_start, &channel.timezone));
 
@@ -1666,14 +1670,13 @@ impl PlayoutConfig {
             playlist.length_sec = Some(86400.0);
         }
 
-        let (logo_path, _, logo) = norm_abs_path(&channel.storage, &processing.logo)?;
+        // Media lives wherever the user browsed to; configured paths are
+        // absolute and used as-is.
+        processing.logo_path = processing.logo.clone();
 
-        if processing.add_logo && !logo_path.is_file() {
+        if processing.add_logo && !PathBuf::from(&processing.logo_path).is_file() {
             processing.add_logo = false;
         }
-
-        processing.logo = logo;
-        processing.logo_path = logo_path.to_string_lossy().to_string();
 
         Ok(Self {
             channel,
@@ -1802,11 +1805,6 @@ async fn get_config_with_args(
         config.storage.paths = paths;
     }
 
-    if let Some(storage) = args.storage {
-        config.channel.storage = PathBuf::from(&storage);
-        config.storage.path = PathBuf::from(&storage);
-    }
-
     if let Some(log) = args.logs {
         config.channel.logs = PathBuf::from(&log);
     }
@@ -1820,7 +1818,7 @@ async fn get_config_with_args(
     }
 
     if let Some(folder) = args.folder {
-        config.channel.storage = folder;
+        config.storage.paths = vec![folder];
         config.processing.mode = ProcessMode::Folder;
     }
 
@@ -1905,7 +1903,7 @@ mod output_tests {
         crate::db::handles::db_migrate(&pool).await.unwrap();
         let dir =
             std::env::temp_dir().join(format!("ffplayout-cli-config-{}", uuid::Uuid::new_v4()));
-        sqlx::query("UPDATE config_global SET public=$1, logs=$1, playlists=$1, storage=$1; UPDATE channels SET public=$1, playlists=$1, storage=$1; UPDATE config_storage SET filler='';")
+        sqlx::query("UPDATE config_global SET public=$1, logs=$1, playlists=$1; UPDATE channels SET public=$1, playlists=$1; UPDATE config_storage SET filler='';")
             .bind(dir.to_string_lossy()).execute(&pool).await.unwrap();
 
         pool
@@ -2076,12 +2074,8 @@ mod output_tests {
         handles::db_migrate(&pool).await.unwrap();
         let dir =
             std::env::temp_dir().join(format!("ffplayout-null-config-{}", std::process::id()));
-        let storage = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests_assets/storage")
-            .canonicalize()
-            .unwrap();
-        sqlx::query("UPDATE config_global SET public=$1, logs=$1, playlists=$1, storage=$2; UPDATE channels SET public=$1, playlists=$1, storage=$2; UPDATE config_output SET active=(name IN ('hls', 'stream'));")
-            .bind(dir.to_string_lossy()).bind(storage.to_string_lossy()).execute(&pool).await.unwrap();
+        sqlx::query("UPDATE config_global SET public=$1, logs=$1, playlists=$1; UPDATE channels SET public=$1, playlists=$1; UPDATE config_output SET active=(name IN ('hls', 'stream'));")
+            .bind(dir.to_string_lossy()).execute(&pool).await.unwrap();
         let before = super::get_config_with_args(&pool, 1, Args::default())
             .await
             .unwrap();

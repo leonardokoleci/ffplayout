@@ -22,6 +22,8 @@ mod configuration;
 mod files;
 #[path = "api/graphics.rs"]
 mod graphics;
+#[path = "api/rundown.rs"]
+mod rundown;
 #[path = "api/users.rs"]
 mod users;
 
@@ -53,11 +55,10 @@ async fn prepare_config() -> (PlayoutConfig, ChannelManager, Pool<Sqlite>) {
         .join("../../tests_assets")
         .canonicalize()
         .unwrap();
-    sqlx::query("UPDATE config_global SET public = $1, logs = $2, playlists = $3, storage = $4; UPDATE channels SET public = $1, playlists = $3, storage = $4;")
+    sqlx::query("UPDATE config_global SET public = $1, logs = $2, playlists = $3; UPDATE channels SET public = $1, playlists = $3;")
         .bind(assets.join("hls").to_string_lossy())
         .bind(assets.join("log").to_string_lossy())
         .bind(assets.join("playlists").to_string_lossy())
-        .bind(assets.join("storage").to_string_lossy())
         .execute(&pool).await.unwrap();
 
     let user = User {
@@ -118,20 +119,16 @@ async fn security_fixture() -> SecurityFixture {
     )
     .await
     .unwrap();
-    sqlx::query(
-        "UPDATE config_global SET logs = $1, playlists = $2, public = $3, storage = $4, shared = 0",
-    )
-    .bind(root.join("logs").to_string_lossy().as_ref())
-    .bind(root.join("playlists").to_string_lossy().as_ref())
-    .bind(root.join("public").to_string_lossy().as_ref())
-    .bind(root.join("storage").to_string_lossy().as_ref())
-    .execute(&pool)
-    .await
-    .unwrap();
-    sqlx::query("UPDATE channels SET playlists = $1, public = $2, storage = $3")
+    sqlx::query("UPDATE config_global SET logs = $1, playlists = $2, public = $3, shared = 0")
+        .bind(root.join("logs").to_string_lossy().as_ref())
         .bind(root.join("playlists").to_string_lossy().as_ref())
         .bind(root.join("public").to_string_lossy().as_ref())
-        .bind(root.join("storage").to_string_lossy().as_ref())
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE channels SET playlists = $1, public = $2")
+        .bind(root.join("playlists").to_string_lossy().as_ref())
+        .bind(root.join("public").to_string_lossy().as_ref())
         .execute(&pool)
         .await
         .unwrap();

@@ -73,26 +73,27 @@ fn default_channel() -> String {
     "Channel 1".to_string()
 }
 
-pub fn set_defaults(config: &PlayoutConfig, playlist: &mut JsonPlaylist) {
+/// Make a media clip ready for playout: normalize live source timing.
+/// Media sources are absolute paths from anywhere on the system; relative
+/// sources are kept as-is and fail validation if the file cannot be found.
+/// Shared by playlist loading and the rundown queue.
+pub fn normalize_media_clip(item: &mut Media) {
+    normalize_live_source_timing(item);
+}
+
+pub fn set_defaults(playlist: &mut JsonPlaylist) {
     let mut start_sec = playlist.start_sec.unwrap();
     let mut length = 0.0;
 
     // Add extra values to every media clip
     for (i, item) in playlist.program.iter_mut().enumerate() {
-        normalize_live_source_timing(item);
+        normalize_media_clip(item);
         item.begin = Some(start_sec);
         item.index = Some(i);
         item.last_ad = false;
         item.next_ad = false;
         item.skip = false;
         item.graphics_elapsed = 0.0;
-
-        for path in [&mut item.source, &mut item.audio] {
-            if Path::new(path).is_relative() && !path.is_empty() && !is_remote(path) {
-                let new_path = config.storage.path.join(&*path);
-                *path = new_path.to_string_lossy().to_string();
-            }
-        }
 
         let dur = item.out - item.seek;
         start_sec += dur;
@@ -158,7 +159,7 @@ pub async fn read_json(
                     playlist.modified = Some(time.to_string());
                 }
 
-                set_defaults(config, &mut playlist);
+                set_defaults(&mut playlist);
                 let list_clone = playlist.clone();
 
                 if !config.general.skip_validation {
@@ -214,7 +215,7 @@ pub async fn read_json(
         playlist.start_sec = Some(start_sec);
         playlist.modified = modified;
 
-        set_defaults(config, &mut playlist);
+        set_defaults(&mut playlist);
         let list_clone = playlist.clone();
 
         if !config.general.skip_validation {
@@ -239,7 +240,7 @@ mod tests {
     async fn explicit_file_uses_broadcast_date_but_daily_directory_keeps_file_date() {
         let (manager, pool) = crate::test_support::channel_manager().await;
         let mut config = manager.config.read().await.clone();
-        let root = config.storage.path.clone();
+        let root = manager.storage.root.read().await.clone();
         config.general.skip_validation = true;
         config.playlist.start_sec = Some(0.0);
         let file = root.join("old-playlist.json");

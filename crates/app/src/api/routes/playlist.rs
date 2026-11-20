@@ -133,10 +133,10 @@ pub async fn gen_playlist(
 
         if let Some(paths) = &obj.paths {
             let mut path_list = Vec::with_capacity(paths.len());
-            let storage_root = config.channel.storage.clone();
+            let root = manager.storage.root.read().await.clone();
 
             for path in paths {
-                let (p, _, _) = norm_abs_path(&storage_root, path)?;
+                let (p, _, _) = norm_abs_path(&root, path)?;
                 path_list.push(p);
             }
 

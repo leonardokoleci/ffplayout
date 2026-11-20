@@ -156,8 +156,7 @@ impl Broadcaster {
                     };
                 }
                 Endpoint::System if include_system => {
-                    let config = client.manager.config.read().await.clone();
-                    let stat = self.system.stat(&config).await;
+                    let stat = self.system.stat().await;
 
                     if !try_send_event(&client.sender, Event::default().data(stat.to_string())) {
                         failed_clients.push(client.sender.clone());

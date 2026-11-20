@@ -15,7 +15,6 @@ const form = ref({
     logs: '',
     playlists: '',
     public: '',
-    storage: '',
     shared: false,
     smtp_server: '',
     smtp_user: '',
@@ -97,10 +96,6 @@ async function submit() {
                 <fieldset class="fieldset">
                     <legend class="fieldset-legend">{{ t('config.publicPath') }}</legend>
                     <input v-model="form.public" name="public" type="text" class="input w-full" required />
-                </fieldset>
-                <fieldset class="fieldset">
-                    <legend class="fieldset-legend">{{ t('config.storagePath') }}</legend>
-                    <input v-model="form.storage" name="storage" type="text" class="input w-full" required />
                 </fieldset>
                 <fieldset class="fieldset mt-2">
                     <label class="fieldset-label text-base-content">

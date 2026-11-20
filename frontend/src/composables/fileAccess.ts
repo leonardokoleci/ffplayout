@@ -27,10 +27,13 @@ export async function createFilePreviewUrl(channelId: number | undefined, path: 
     return fileUrl(channelId, path, token.access)
 }
 
-/** Playlist paths are storage-relative; browser names also include its current folder. */
-export function storagePreviewPath(path: string, root: string, folder?: string): string {
+/** Browser file names may need the currently browsed folder prepended. */
+export function storagePreviewPath(path: string, folder?: string): string {
     if (/^[a-z][a-z0-9+.-]*:\/\//i.test(path)) return path
+
     const absolute = path.startsWith('/') || /^[a-z]:[\\/]/i.test(path)
-    if (absolute) return path
-    return [root.replace(/[\\/]+$/, ''), folder, path].filter(Boolean).join('/')
+
+    if (absolute || !folder) return path.replace(/\\/g, '/')
+
+    return [folder.replace(/[\\/]+$/, ''), path].filter(Boolean).join('/')
 }

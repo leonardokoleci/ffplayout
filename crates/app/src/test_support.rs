@@ -14,22 +14,20 @@ pub(crate) async fn channel_manager() -> (ChannelManager, SqlitePool) {
         .await
         .unwrap();
     handles::db_migrate(&pool).await.unwrap();
-    let storage = std::env::temp_dir().join(format!("ffplayout-manager-{}", uuid::Uuid::new_v4()));
-    let playlists = storage.join("playlists");
-    let logs = storage.join("logs");
-    let public = storage.join("public");
+    let root = std::env::temp_dir().join(format!("ffplayout-manager-{}", uuid::Uuid::new_v4()));
+    let playlists = root.join("playlists");
+    let logs = root.join("logs");
+    let public = root.join("public");
 
     // Configuration loading creates playlists and logs too. Keep every path
     // inside the fixture root so tests need no system directory permissions.
-    sqlx::query("UPDATE channels SET storage = $1, playlists = $2, public = $3")
-        .bind(storage.to_string_lossy())
+    sqlx::query("UPDATE channels SET playlists = $1, public = $2")
         .bind(playlists.to_string_lossy())
         .bind(public.to_string_lossy())
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query("UPDATE config_global SET storage = $1, playlists = $2, logs = $3, public = $4")
-        .bind(storage.to_string_lossy())
+    sqlx::query("UPDATE config_global SET playlists = $1, logs = $2, public = $3")
         .bind(playlists.to_string_lossy())
         .bind(logs.to_string_lossy())
         .bind(public.to_string_lossy())
@@ -47,6 +45,10 @@ pub(crate) async fn channel_manager() -> (ChannelManager, SqlitePool) {
     )
     .await
     .unwrap();
+
+    // Without a fixed media root the browser storage anchors to the current
+    // directory; tests point it at the fixture root so cleanups stay scoped.
+    *manager.storage.root.write().await = root;
 
     (manager, pool)
 }

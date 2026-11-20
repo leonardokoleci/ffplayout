@@ -140,7 +140,6 @@ declare global {
         preview_url: string
         public: string
         playlists: string
-        storage: string
         timezone?: string
     }
 
@@ -279,6 +278,36 @@ declare global {
         elapsed: number
         shift: number
         title?: string
+        rundown_revision?: number
+        rundown_head?: number | null
+    }
+
+    interface RundownItem {
+        id: number
+        position: number
+        source: string
+        in: number
+        out: number
+        duration: number
+        title?: string | null
+        ad: boolean
+        custom_filter: string
+        audio: string
+        begin_epoch: number
+        end_epoch: number
+        played: boolean
+    }
+
+    interface RundownQueue {
+        revision: number
+        head_item_id: number | null
+        items: RundownItem[]
+    }
+
+    interface RundownTrim {
+        seek: number
+        out: number
+        duration: number
     }
 
     interface AudioLevel {

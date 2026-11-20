@@ -23,6 +23,7 @@ use crate::ffmpeg::compositor::{
 mod streaming;
 
 use super::decoder::LogoDecoder;
+use super::html::HtmlSource;
 use streaming::StreamSource;
 
 #[derive(Clone, Copy)]
@@ -37,10 +38,14 @@ pub(in crate::ffmpeg) struct PreparedSurface {
     frames: Vec<(FrameTiming, Arc<OverlayFrame>)>,
     playback: Option<(LoopDuration, Repeat, Completion)>,
     stream: Option<StreamSource>,
+    live: Option<HtmlSource>,
 }
 
 impl PreparedSurface {
     pub(in crate::ffmpeg) fn end_us(&self) -> Option<i64> {
+        if self.live.is_some() {
+            return None;
+        }
         if let Some(stream) = &self.stream {
             return stream.end_us();
         }
@@ -63,6 +68,22 @@ impl PreparedSurface {
             )],
             playback: None,
             stream: None,
+            live: None,
+        }
+    }
+
+    pub(in crate::ffmpeg) fn live(live: HtmlSource, poster: Arc<OverlayFrame>) -> Self {
+        Self {
+            frames: vec![(
+                FrameTiming {
+                    start_us: 0,
+                    duration_us: 1,
+                },
+                poster,
+            )],
+            playback: None,
+            stream: None,
+            live: Some(live),
         }
     }
 
@@ -71,6 +92,9 @@ impl PreparedSurface {
         elapsed_us: i64,
         instance: (u64, u64, i64),
     ) -> Option<Arc<OverlayFrame>> {
+        if let Some(live) = &self.live {
+            return live.at(elapsed_us);
+        }
         if let Some(stream) = &self.stream {
             return stream.at(elapsed_us, instance);
         }
@@ -79,34 +103,52 @@ impl PreparedSurface {
     }
 
     pub(in crate::ffmpeg) fn poster(&self) -> Option<Arc<OverlayFrame>> {
+        if let Some(live) = &self.live {
+            return Some(live.poster());
+        }
         self.frames.first().map(|(_, surface)| surface.clone())
     }
 
     pub(in crate::ffmpeg) fn prewarm(&self, elapsed_us: i64, instance: (u64, u64, i64)) {
+        if let Some(live) = &self.live {
+            return live.prewarm(elapsed_us);
+        }
         if let Some(stream) = &self.stream {
             stream.prewarm(elapsed_us, instance);
         }
     }
 
     pub(in crate::ffmpeg) fn begin_frame(&self, epoch: i64) {
+        if let Some(live) = &self.live {
+            return live.begin_frame(epoch);
+        }
         if let Some(stream) = &self.stream {
             stream.begin_frame(epoch);
         }
     }
 
     pub(in crate::ffmpeg) fn end_frame(&self) {
+        if let Some(live) = &self.live {
+            return live.end_frame();
+        }
         if let Some(stream) = &self.stream {
             stream.end_frame();
         }
     }
 
     pub(in crate::ffmpeg) fn suspend(&self) {
+        if let Some(live) = &self.live {
+            return live.suspend();
+        }
         if let Some(stream) = &self.stream {
             stream.suspend();
         }
     }
 
     pub(in crate::ffmpeg) fn stop(&self) {
+        if let Some(live) = &self.live {
+            return live.stop();
+        }
         if let Some(stream) = &self.stream {
             stream.stop();
         }
@@ -271,6 +313,7 @@ impl CpuScene {
                         )],
                         playback: None,
                         stream: Some(stream),
+                        live: None,
                     }),
                 );
             }
@@ -332,6 +375,7 @@ impl CpuScene {
                 frames,
                 playback: Some((duration, options.repeat, options.completion)),
                 stream: None,
+                live: None,
             }),
         )
     }

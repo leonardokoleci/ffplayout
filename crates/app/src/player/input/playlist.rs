@@ -392,10 +392,15 @@ impl CurrentProgram {
 
             self.handle_list_init(node_clone, last_index).await;
 
-            if self
-                .current_node
-                .source
-                .contains(&self.config.channel.storage.to_string_lossy().to_string())
+            if !self.config.storage.filler_path.as_os_str().is_empty()
+                && self.current_node.source.contains(
+                    &self
+                        .config
+                        .storage
+                        .filler_path
+                        .to_string_lossy()
+                        .to_string(),
+                )
             {
                 is_filler = true;
             }
@@ -447,7 +452,7 @@ impl CurrentProgram {
         }
 
         self.json_playlist.start_sec = Some(time_sec);
-        set_defaults(&self.config, &mut self.json_playlist);
+        set_defaults(&mut self.json_playlist);
         self.manager
             .current_list
             .lock()
@@ -601,132 +606,17 @@ impl CurrentProgram {
 
         trace!("Clip length: {duration}, duration: {}", node.duration);
 
-        if node.probe.is_none()
-            && !node.source.is_empty()
-            && let Err(e) = node.add_probe(true).await
-        {
-            trace!("{e:?}");
-        };
+        let fallback = fill_source_fallback(
+            &self.manager,
+            &self.config,
+            self.channel_id,
+            &mut node,
+            node_index < last_index,
+        )
+        .await;
 
-        // separate if condition, because of node.add_probe() in last condition
-        if node.probe.is_none() && !is_live_source(&node.source) {
-            trace!("clip index: {node_index} | last index: {last_index}");
-
-            if node_index < last_index {
-                error!(
-                    channel = self.channel_id;
-                    "Source not found: <span class=\"log-addr\">{}</span>", node.source
-                );
-            }
-
+        if fallback {
             self.manager.list_init.store(true, Ordering::SeqCst);
-
-            let filler = {
-                let fillers = self.manager.filler_list.lock().await;
-
-                if self.config.storage.filler_path.is_dir() && !fillers.is_empty() {
-                    let index = self
-                        .manager
-                        .filler_index
-                        .try_update(Ordering::SeqCst, Ordering::SeqCst, |i| {
-                            Some(if i + 1 >= fillers.len() { 0 } else { i + 1 })
-                        })
-                        .unwrap_or(0);
-                    trace!("take filler: {}", fillers[index].source);
-                    Some(fillers[index].clone())
-                } else {
-                    None
-                }
-            };
-
-            if let Some(mut filler_media) = filler {
-                if filler_media.probe.is_none()
-                    && let Err(e) = filler_media.add_probe(false).await
-                {
-                    error!(channel = self.channel_id; "{e:?}");
-                };
-
-                node.source = filler_media.source;
-                node.seek = 0.0;
-                node.out = placeholder_duration(duration, filler_media.duration);
-                node.duration = filler_media.duration;
-                node.probe = filler_media.probe;
-                node.is_placeholder = true;
-            } else if self.config.storage.filler_path.is_dir() {
-                // A directory is the normal configured filler location. If it
-                // currently contains no usable media, generate the built-in
-                // black/silence fallback instead of attempting to probe the
-                // directory as if it were a media file.
-                let mut dummy_duration = 60.0;
-
-                if node.duration > 0.0 && dummy_duration > duration {
-                    dummy_duration = duration;
-                }
-
-                node.seek = 0.0;
-                node.out = dummy_duration;
-                node.duration = dummy_duration;
-            } else {
-                match probe_media(&self.config.storage.filler_path).await {
-                    Ok(probe) => {
-                        if let Some(filler_duration) = probe.clone().format.duration {
-                            // Create placeholder from config filler.
-                            node.source = self
-                                .config
-                                .storage
-                                .filler_path
-                                .clone()
-                                .to_string_lossy()
-                                .to_string();
-                            node.seek = 0.0;
-                            node.out = placeholder_duration(duration, filler_duration);
-                            node.duration = filler_duration;
-                            node.probe = Some(probe);
-                            node.is_placeholder = true;
-                        } else {
-                            node.source = self
-                                .config
-                                .storage
-                                .filler_path
-                                .clone()
-                                .to_string_lossy()
-                                .to_string();
-                            node.seek = 0.0;
-                            node.out = duration;
-                            node.duration = duration;
-                            node.probe = Some(probe);
-                            node.is_placeholder = true;
-                        }
-                    }
-                    Err(e) => {
-                        error!(channel = self.channel_id; "Filler error: {e}");
-
-                        let mut dummy_duration = 60.0;
-
-                        if node.duration > 0.0 && dummy_duration > duration {
-                            dummy_duration = duration;
-                        }
-
-                        node.seek = 0.0;
-                        node.out = dummy_duration;
-                        node.duration = dummy_duration;
-                    }
-                }
-            }
-
-            if node.source.is_empty() {
-                info!(
-                    channel = self.channel_id;
-                    "Generate dummy with <span class=\"log-number\">{:.2}</span> seconds length.",
-                    node.out
-                );
-            } else {
-                warn!(
-                    channel = self.channel_id;
-                    "Generate filler with <span class=\"log-number\">{:.2}</span> seconds length!",
-                    node.out
-                );
-            }
         }
 
         trace!(
@@ -736,6 +626,147 @@ impl CurrentProgram {
 
         self.current_node = node;
     }
+}
+
+/// Probe a clip and, when the source cannot be used, substitute the configured
+/// filler (rotating filler directory, filler file, or the built-in black/silence
+/// dummy). Returns `true` when a fallback was applied.
+///
+/// Shared by the playlist and rundown source iterators.
+pub(crate) async fn fill_source_fallback(
+    manager: &ChannelManager,
+    config: &PlayoutConfig,
+    channel_id: i32,
+    node: &mut Media,
+    report_missing: bool,
+) -> bool {
+    if node.probe.is_none()
+        && !node.source.is_empty()
+        && let Err(e) = node.add_probe(true).await
+    {
+        trace!("{e:?}");
+    };
+
+    // separate if condition, because of node.add_probe() in last condition
+    if node.probe.is_some() || is_live_source(&node.source) {
+        return false;
+    }
+
+    if report_missing {
+        error!(
+            channel = channel_id;
+            "Source not found: <span class=\"log-addr\">{}</span>", node.source
+        );
+    }
+
+    let filler = {
+        let fillers = manager.filler_list.lock().await;
+
+        if config.storage.filler_path.is_dir() && !fillers.is_empty() {
+            let index = manager
+                .filler_index
+                .try_update(Ordering::SeqCst, Ordering::SeqCst, |i| {
+                    Some(if i + 1 >= fillers.len() { 0 } else { i + 1 })
+                })
+                .unwrap_or(0);
+            trace!("take filler: {}", fillers[index].source);
+            Some(fillers[index].clone())
+        } else {
+            None
+        }
+    };
+
+    let duration = node.out - node.seek;
+
+    if let Some(mut filler_media) = filler {
+        if filler_media.probe.is_none()
+            && let Err(e) = filler_media.add_probe(false).await
+        {
+            error!(channel = channel_id; "{e:?}");
+        };
+
+        node.source = filler_media.source;
+        node.seek = 0.0;
+        node.out = placeholder_duration(duration, filler_media.duration);
+        node.duration = filler_media.duration;
+        node.probe = filler_media.probe;
+        node.is_placeholder = true;
+    } else if config.storage.filler_path.as_os_str().is_empty() {
+        // No filler is configured; play the generated dummy.
+        let mut dummy_duration = 60.0;
+
+        if node.duration > 0.0 && dummy_duration > duration {
+            dummy_duration = duration;
+        }
+
+        node.seek = 0.0;
+        node.out = dummy_duration;
+        node.duration = dummy_duration;
+    } else if config.storage.filler_path.is_dir() {
+        // A directory is the normal configured filler location. If it
+        // currently contains no usable media, generate the built-in
+        // black/silence fallback instead of attempting to probe the
+        // directory as if it were a media file.
+        let mut dummy_duration = 60.0;
+
+        if node.duration > 0.0 && dummy_duration > duration {
+            dummy_duration = duration;
+        }
+
+        node.seek = 0.0;
+        node.out = dummy_duration;
+        node.duration = dummy_duration;
+    } else {
+        match probe_media(&config.storage.filler_path).await {
+            Ok(probe) => {
+                if let Some(filler_duration) = probe.clone().format.duration {
+                    // Create placeholder from config filler.
+                    node.source = config.storage.filler_path.to_string_lossy().to_string();
+                    node.seek = 0.0;
+                    node.out = placeholder_duration(duration, filler_duration);
+                    node.duration = filler_duration;
+                    node.probe = Some(probe);
+                    node.is_placeholder = true;
+                } else {
+                    node.source = config.storage.filler_path.to_string_lossy().to_string();
+                    node.seek = 0.0;
+                    node.out = duration;
+                    node.duration = duration;
+                    node.probe = Some(probe);
+                    node.is_placeholder = true;
+                }
+            }
+            Err(e) => {
+                error!(channel = channel_id; "Filler error: {e}");
+
+                let mut dummy_duration = 60.0;
+
+                if node.duration > 0.0 && dummy_duration > duration {
+                    dummy_duration = duration;
+                }
+
+                node.seek = 0.0;
+                node.out = dummy_duration;
+                node.duration = dummy_duration;
+            }
+        }
+    }
+
+    if node.source.is_empty() {
+        info!(
+            channel = channel_id;
+            "Generate dummy with <span class=\"log-number\">{:.2}</span> seconds length.",
+            node.out
+        );
+    } else {
+        warn!(
+            channel = channel_id;
+            "Generate filler with <span class=\"log-number\">{:.2}</span> seconds length!",
+            node.out
+        );
+    }
+
+    true
 }
 
 /// Build the playlist iterator
@@ -864,7 +895,7 @@ impl CurrentProgram {
 /// Sources without a seekable timeline need special handling when playout
 /// starts in the middle of their scheduled slot. Still images keep their first
 /// frame for the remaining slot; live transports start at their current edge.
-fn apply_init_seek(node: &mut Media, elapsed: f64) {
+pub(crate) fn apply_init_seek(node: &mut Media, elapsed: f64) {
     node.graphics_elapsed += elapsed.max(0.0);
     if is_live_source(&node.source) || is_image_source(&node.source) {
         node.out = (node.out - node.seek - elapsed).max(0.0);

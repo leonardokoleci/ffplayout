@@ -18,7 +18,7 @@ const indexStore = useIndex()
 
 const logLevels = ['INFO', 'WARNING', 'ERROR']
 const notificationLevels = ['INFO', 'WARNING', 'ERROR', 'FATAL']
-const processingMode = ['folder', 'playlist']
+const processingMode = ['folder', 'playlist', 'rundown']
 
 type PathField = 'vtt_dummy' | 'filler' | 'task'
 const pathField = ref<PathField>()

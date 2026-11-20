@@ -36,16 +36,25 @@ pub(super) async fn prepare(
     let state = manager.manual_state.clone();
     let epoch = state.epoch.load(Ordering::Acquire);
     let preparation = manager.graphics.preparation();
+    // Graphics sources resolve relative to the shared browser anchor; pickers
+    // normally deliver absolute paths from any disk.
+    let root = manager.storage.root.read().await.clone();
+    let browser = config
+        .processing
+        .graphics_browser
+        .as_ref()
+        .map(std::path::PathBuf::from);
 
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
         prepare_manual(
             data,
-            &config.storage.path,
+            &root,
             canvas,
             config.general.channel_id,
             || !alive.load(Ordering::SeqCst) || state.epoch.load(Ordering::Acquire) != epoch,
             preparation,
+            browser,
         )
     })
     .await?
@@ -61,13 +70,17 @@ fn prepare_manual(
     channel: i32,
     cancelled: impl Fn() -> bool,
     preparation: PreparationService,
+    browser: Option<std::path::PathBuf>,
 ) -> Result<ClipGraphics> {
     let (renderer, mut schedule) = prepare_scene_budgeted(
         &Value::Array(vec![data.clone()]),
         root,
-        canvas,
-        i64::MAX / 4,
-        channel,
+        super::super::SceneRequest {
+            canvas,
+            duration_us: i64::MAX / 4,
+            channel,
+            browser,
+        },
         cancelled,
         Some(preparation),
     )?;

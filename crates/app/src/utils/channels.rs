@@ -19,11 +19,10 @@ pub async fn initialize_channels(
     queue: Arc<Mutex<Vec<Arc<Mutex<MailQueue>>>>>,
     shutdown: tokio_util::sync::CancellationToken,
     system: SystemStat,
-    copy_assets: bool,
 ) -> Result<(), ServiceError> {
     let channels = handles::select_related_channels(conn, None).await?;
 
-    for (index, channel) in channels.into_iter().enumerate() {
+    for channel in channels {
         let config = get_config(conn, channel.id).await?;
         let mail_queue = Arc::new(Mutex::new(MailQueue::new(
             channel.id,
@@ -39,13 +38,6 @@ pub async fn initialize_channels(
             system.clone(),
         )
         .await?;
-
-        if copy_assets
-            && index == 0
-            && let Err(error) = manager.storage.copy_assets().await
-        {
-            warn!("Could not copy initial storage assets: {error}");
-        }
 
         queue.lock().await.push(mail_queue);
 
@@ -92,10 +84,6 @@ pub async fn create_channel(
                 return Err(error);
             }
         };
-
-    if let Err(e) = manager.storage.copy_assets().await {
-        error!("{e}");
-    };
 
     controllers.write().await.add(manager);
     queue.lock().await.push(m_queue);
@@ -170,8 +158,5 @@ mod tests {
         assert!(!manager.is_alive.load(Ordering::SeqCst));
         assert!(controller.read().await.get(manager.id).is_none());
         assert!(handles::select_channel(&pool, &manager.id).await.is_err());
-        tokio::fs::remove_dir_all(manager.storage.root.read().await.clone())
-            .await
-            .unwrap();
     }
 }

@@ -10,7 +10,10 @@ use std::{
 use anyhow::{Context, Result, anyhow, ensure};
 use ff_engine::ClipGraphics;
 use ff_graphics::{
-    ffmpeg::{scene::CpuScene, sources::animation::AnimationOptions},
+    ffmpeg::{
+        scene::CpuScene,
+        sources::{animation::AnimationOptions, html::HtmlTarget},
+    },
     playback::{Repeat, Transition},
     playlist::{Action, ClipSchedule, Event, Limits},
     scene::{LayerId, LayerSpec, Scope},
@@ -388,6 +391,7 @@ impl GraphicsPreparer {
         root: &Path,
         canvas: (u32, u32),
         channel: i32,
+        browser: Option<PathBuf>,
     ) -> Option<ClipGraphics> {
         self.cancel_clips();
         let data = node.graphics.as_ref()?;
@@ -419,9 +423,12 @@ impl GraphicsPreparer {
             let result = prepare_scene_budgeted(
                 &data,
                 &root,
-                canvas,
-                duration_us,
-                channel,
+                SceneRequest {
+                    canvas,
+                    duration_us,
+                    channel,
+                    browser,
+                },
                 || cancellation.is_cancelled() || completion.is_cancelled(),
                 Some(preparation),
             );
@@ -461,11 +468,18 @@ impl Drop for GraphicsPreparer {
 
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 struct Asset {
-    path: PathBuf,
+    source: AssetSource,
+    html: bool,
     size: Option<(u32, u32)>,
     source_repeat: u32,
     source_end: SourceEnd,
     high_quality: bool,
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+enum AssetSource {
+    Local(PathBuf),
+    Remote(String),
 }
 
 #[cfg(test)]
@@ -480,23 +494,37 @@ fn prepare_scene(
     prepare_scene_budgeted(
         data,
         root,
-        canvas,
-        duration_us,
-        channel,
+        SceneRequest {
+            canvas,
+            duration_us,
+            channel,
+            browser: None,
+        },
         cancelled,
         Some(ff_graphics::preparation::PreparationService::default()),
     )
 }
 
-fn prepare_scene_budgeted(
-    data: &Value,
-    root: &Path,
+struct SceneRequest {
     canvas: (u32, u32),
     duration_us: i64,
     channel: i32,
+    browser: Option<PathBuf>,
+}
+
+fn prepare_scene_budgeted(
+    data: &Value,
+    root: &Path,
+    request: SceneRequest,
     cancelled: impl Fn() -> bool,
     preparation: Option<ff_graphics::preparation::PreparationService>,
 ) -> Result<(CpuScene, ClipSchedule)> {
+    let SceneRequest {
+        canvas,
+        duration_us,
+        channel,
+        browser,
+    } = request;
     let array = data
         .as_array()
         .context("graphics must be an array of events")?;
@@ -568,51 +596,55 @@ fn prepare_scene_budgeted(
                 if transition.hold_us.is_none() || cycle_duration > u128::from(remaining) {
                     transition = transition.within(remaining);
                 }
-                let path = if source.contains("://") {
-                    Err(anyhow!("remote graphic sources are unsupported"))
+                let lowered = source.to_ascii_lowercase();
+                let html = lowered.ends_with(".html") || lowered.ends_with(".htm");
+                let asset_source = if source.contains("://") {
+                    ensure!(
+                        lowered.starts_with("http://") || lowered.starts_with("https://"),
+                        "remote graphic sources must use http or https"
+                    );
+                    // A remote source is always rendered as an HTML page.
+                    AssetSource::Remote(source.clone())
                 } else {
-                    norm_abs_path(root, &source)
-                        .map(|(path, _, _)| path)
-                        .map_err(|error| anyhow!("{error}"))
-                };
-                let resource = match path {
-                    Ok(path) => {
-                        let asset = Asset {
-                            path,
-                            size,
-                            source_repeat: source_repeat.count(),
-                            high_quality,
-                            source_end,
-                        };
-                        if let Some(resource) = assets.get(&asset) {
-                            resource.clone()
-                        } else {
-                            ensure!(assets.len() < 64, "graphics asset limit exceeded (64)");
-                            let key = ResourceKey {
-                                id: assets.len() as u64 + 1,
-                                revision: assets.len() as u64 + 1,
-                            };
-                            let resource = match prepare_source(
-                                &mut renderer,
-                                key,
-                                &asset,
-                                source_repeat.playback(),
-                                &cancelled,
-                            ) {
-                                Ok(resource) => Some(resource),
-                                Err(error) => {
-                                    warn!(channel = channel; "Playlist graphic {source:?} omitted: {error:#}");
-                                    None
-                                }
-                            };
-                            assets.insert(asset, resource.clone());
+                    let (path, _, _) =
+                        norm_abs_path(root, &source).map_err(|error| anyhow!("{error}"))?;
 
-                            resource
-                        }
-                    }
-                    Err(error) => {
-                        warn!(channel = channel; "Playlist graphic {source:?} omitted: {error:#}");
-                        None
+                    AssetSource::Local(path)
+                };
+                let resource = {
+                    let asset = Asset {
+                        source: asset_source,
+                        html,
+                        size,
+                        source_repeat: source_repeat.count(),
+                        high_quality,
+                        source_end,
+                    };
+                    if let Some(resource) = assets.get(&asset) {
+                        resource.clone()
+                    } else {
+                        ensure!(assets.len() < 64, "graphics asset limit exceeded (64)");
+                        let key = ResourceKey {
+                            id: assets.len() as u64 + 1,
+                            revision: assets.len() as u64 + 1,
+                        };
+                        let resource = match prepare_source(
+                            &mut renderer,
+                            key,
+                            &asset,
+                            source_repeat.playback(),
+                            browser.as_deref(),
+                            &cancelled,
+                        ) {
+                            Ok(resource) => Some(resource),
+                            Err(error) => {
+                                warn!(channel = channel; "Playlist graphic {source:?} omitted: {error:#}");
+                                None
+                            }
+                        };
+                        assets.insert(asset, resource.clone());
+
+                        resource
                     }
                 };
                 let Some(resource) = resource else {
@@ -700,18 +732,29 @@ fn prepare_source(
     key: ResourceKey,
     asset: &Asset,
     repeat: Repeat,
+    browser: Option<&Path>,
     cancelled: &impl Fn() -> bool,
 ) -> Result<Arc<Resource>> {
-    if asset
-        .path
+    if asset.html {
+        let target = match &asset.source {
+            AssetSource::Local(path) => HtmlTarget::File(path),
+            AssetSource::Remote(url) => HtmlTarget::Url(url),
+        };
+
+        return renderer.prepare_html(key, target, asset.size, browser, cancelled);
+    }
+    let AssetSource::Local(path) = &asset.source else {
+        return Err(anyhow!("remote graphic sources must use http or https"));
+    };
+    if path
         .extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("png"))
     {
-        return renderer.prepare_png_with_quality(key, &asset.path, asset.size, asset.high_quality);
+        return renderer.prepare_png_with_quality(key, path, asset.size, asset.high_quality);
     }
     renderer.prepare_animation(
         key,
-        &asset.path,
+        path,
         AnimationOptions {
             high_quality: asset.high_quality,
             size: asset.size,
@@ -907,7 +950,7 @@ mod tests {
                 {"at":1,"action":"stop","layer":1},
                 {"at":1,"action":"update","layer":1,"opacity":0.5},
                 {"at":1,"action":"take","layer":3,"source":"../lower-third.png"},
-                {"at":1,"action":"take","layer":4,"source":"https://example.invalid/image.png"}
+                {"at":1,"action":"take","layer":4,"source":"ftp://example.invalid/image.png"}
             ]),
             2_000_000,
         )
@@ -915,6 +958,31 @@ mod tests {
         let selected = schedule.frame_at(Some(1_500_000)).unwrap();
         assert_eq!(selected.scene.layers.len(), 1);
         assert_eq!(selected.scene.layers[0].spec.id, LayerId(2));
+    }
+
+    #[test]
+    fn html_assets_are_routed_to_the_browser_source() {
+        // An odd size fails before any browser is launched; the layer is omitted
+        // like any other bad source while the valid PNG layer keeps working.
+        let schedule = compile(
+            json!([
+                {"at":0,"action":"take","layer":1,"source":"overlay.html","size":[3,4]},
+                {"at":0,"action":"take","layer":2,"source":"lower-third.png","size":[8,4]}
+            ]),
+            2_000_000,
+        )
+        .unwrap();
+        let selected = schedule.frame_at(Some(1_000_000)).unwrap();
+        assert_eq!(selected.scene.layers.len(), 1);
+        assert_eq!(selected.scene.layers[0].spec.id, LayerId(2));
+        // Non-http(s) remote schemes are rejected before any browser is launched.
+        assert!(
+            compile(
+                json!([{"at":0,"action":"take","layer":1,"source":"ftp://example.invalid/overlay.html"}]),
+                1_000_000
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1011,7 +1079,7 @@ mod tests {
         let preparer = GraphicsPreparer::new();
         assert!(
             preparer
-                .for_clip(&Media::default(), &root(), (1280, 720), 1)
+                .for_clip(&Media::default(), &root(), (1280, 720), 1, None)
                 .is_none()
         );
         assert_eq!(preparer.active.available_permits(), 2);
@@ -1022,10 +1090,10 @@ mod tests {
             graphics: Some(Arc::new(json!([{"at":0,"action":"clear_all"}]))),
             ..Media::default()
         };
-        let pending = preparer.for_clip(&node, &root(), (1280, 720), 1);
+        let pending = preparer.for_clip(&node, &root(), (1280, 720), 1, None);
         assert!(pending.is_some());
         assert!(preparer.state.lock().unwrap().pending.is_some());
-        preparer.for_clip(&Media::default(), &root(), (1280, 720), 1);
+        preparer.for_clip(&Media::default(), &root(), (1280, 720), 1, None);
         assert!(preparer.state.lock().unwrap().pending.is_none());
     }
 
@@ -1279,7 +1347,7 @@ mod tests {
     #[tokio::test]
     async fn channel_stop_tracks_old_job_and_restart_uses_only_the_spare_slot() {
         let (manager, pool) = crate::test_support::channel_manager().await;
-        let storage = manager.config.read().await.storage.path.clone();
+        let storage = manager.storage.root.read().await.clone();
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
         assert!(manager.graphics.spawn(move |cancellation| {
@@ -1363,8 +1431,9 @@ mod tests {
         let loaded = read_playlist(&config, playlist.date.clone()).await.unwrap();
         assert_eq!(loaded.program[0].graphics, playlist.program[0].graphics);
         assert_eq!(loaded.program[0].graphics_elapsed, 0.0);
+        let root = manager.storage.root.read().await.clone();
         drop(manager);
         pool.close().await;
-        std::fs::remove_dir_all(config.storage.path).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -81,6 +81,7 @@ pub async fn select_configuration(
         processing.logo_position AS processing_logo_position,
         processing.logo_high_quality AS processing_logo_high_quality,
         processing.graphics_cache_mib AS processing_graphics_cache_mib,
+        processing.graphics_browser AS processing_graphics_browser,
         audio.volume AS processing_volume,
         audio.loudness_scope AS processing_loudness_scope,
         audio.compressor_ratio AS processing_compressor_ratio,
@@ -272,14 +273,15 @@ pub async fn update_configuration_on(
         .bind(id).bind(config.logging.ffmpeg_level).bind(config.logging.ingest_level)
         .bind(config.logging.detect_silence).bind(config.logging.ignore_lines.join(";"))
         .execute(&mut *connection).await?;
-    sqlx::query("UPDATE config_processing SET mode = $2, add_logo = $3, logo = $4, logo_scale = $5, logo_opacity = $6, logo_position = $7, vtt_enable = $8, vtt_dummy = $9, vtt_name = $10, vtt_language = $11, vtt_default = $12, logo_high_quality = $13, graphics_cache_mib = $14 WHERE config_id = $1")
+    sqlx::query("UPDATE config_processing SET mode = $2, add_logo = $3, logo = $4, logo_scale = $5, logo_opacity = $6, logo_position = $7, vtt_enable = $8, vtt_dummy = $9, vtt_name = $10, vtt_language = $11, vtt_default = $12, logo_high_quality = $13, graphics_cache_mib = $14, graphics_browser = $15 WHERE config_id = $1")
         .bind(id).bind(config.processing.mode.to_string()).bind(config.processing.add_logo)
         .bind(config.processing.logo).bind(config.processing.logo_scale)
         .bind(config.processing.logo_opacity).bind(config.processing.logo_position)
         .bind(config.processing.vtt_enable).bind(config.processing.vtt_dummy)
         .bind(config.processing.vtt_name).bind(config.processing.vtt_language)
         .bind(config.processing.vtt_default)
-        .bind(config.processing.logo_high_quality).bind(config.processing.graphics_cache_mib).execute(&mut *connection).await?;
+        .bind(config.processing.logo_high_quality).bind(config.processing.graphics_cache_mib)
+        .bind(config.processing.graphics_browser).execute(&mut *connection).await?;
     sqlx::query("UPDATE config_audio SET volume = $2, loudness_enable = $3, loudness_target_lufs = $4, loudness_dead_band_lu = $5, loudness_max_gain_db = $6, loudness_max_attenuation_db = $7, loudness_gain_up_db_per_second = $8, loudness_gain_down_db_per_second = $9, loudness_silence_gate_lufs = $10, loudness_true_peak_ceiling_dbtp = $11, loudness_scope = $12, compressor_ratio = $13, compressor_threshold_dbfs = $14, pause_threshold_dbfs = $15, compressor_attack_ms = $16, compressor_hold_ms = $17, compressor_release_ms = $18, compressor_strong_release_ms = $19, compressor_knee_db = $20, pause_hold_ms = $21, pause_return_delay_ms = $22, loudness_output_max_correction_db = $23, loudness_output_gain_up_db_per_second = $24, loudness_output_gain_down_db_per_second = $25 WHERE config_id = $1")
         .bind(id).bind(config.audio.volume).bind(config.audio.loudness_scope != "off")
         .bind(config.audio.loudness_target_lufs).bind(config.audio.loudness_dead_band_lu)
@@ -411,13 +413,12 @@ async fn activate_output(
         .bind(config_id)
         .execute(&mut *connection)
         .await?;
-    let result = sqlx::query(
-        "UPDATE config_output SET active = 1, priority = 0 WHERE config_id = $1 AND id = $2",
-    )
-    .bind(config_id)
-    .bind(output_id)
-    .execute(&mut *connection)
-    .await?;
+    let result =
+        sqlx::query("UPDATE config_output SET priority = 0 WHERE config_id = $1 AND id = $2")
+            .bind(config_id)
+            .bind(output_id)
+            .execute(&mut *connection)
+            .await?;
 
     if result.rows_affected() != 1 {
         return Err(ProcessError::Custom(format!(
@@ -493,9 +494,13 @@ mod tests {
         let initial = select_configuration(&pool, 1).await.unwrap();
         assert!(initial.processing_logo_high_quality);
         assert_eq!(initial.processing_graphics_cache_mib, 128);
-        sqlx::raw_sql("UPDATE config_global SET logs = 'assets', playlists = 'assets', public = 'assets', storage = 'assets';
-            UPDATE channels SET public = 'assets', playlists = 'assets', storage = 'assets';")
-            .execute(&pool).await.unwrap();
+        sqlx::raw_sql(
+            "UPDATE config_global SET logs = 'assets', playlists = 'assets', public = 'assets';
+            UPDATE channels SET public = 'assets', playlists = 'assets';",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         let mut config = PlayoutConfig::new(&pool, 1, None).await.unwrap();
         config.processing.logo_high_quality = false;
         config.processing.graphics_cache_mib = 1024;
@@ -620,7 +625,7 @@ mod tests {
                 mail_subject = 'Migrated subject', logging_ignore = 'custom warning',
                 processing_logo = 'custom/logo.png', ingest_enable = 1,
                 ingest_url = 'rtmp://127.0.0.1:1940/live/test',
-                playlist_length = '12:00:00', storage_filler = 'custom/filler.mp4',
+                playlist_length = '12:00:00', storage_filler = 'C:/custom/filler.mp4',
                 text_preset_id = 4, task_enable = 1, task_path = '/opt/task', output_id = 2;
              UPDATE audio_config SET volume = 0.42, live_loudness_enable = 1,
                 live_loudness_target_lufs = -19.0, live_loudness_dead_band_lu = 0.75,
@@ -674,7 +679,7 @@ mod tests {
         assert_eq!(migrated_listener.1, "rtmp://127.0.0.1:1940/live/test");
         assert_eq!(migrated_listener.2, 100);
         assert_eq!(config.playlist_length, "12:00:00");
-        assert_eq!(config.storage_filler, "custom/filler.mp4");
+        assert_eq!(config.storage_filler, "C:/custom/filler.mp4");
         assert_eq!(config.text_preset_id, Some(4));
         assert!(config.task_enable);
         assert_eq!(config.task_path, "/opt/task");
@@ -713,7 +718,12 @@ mod tests {
                 .await
                 .unwrap();
 
-        assert_eq!(active, [1]);
+        let moq_id: i32 =
+            sqlx::query_scalar("SELECT id FROM config_output WHERE config_id = 1 AND name = 'moq'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(active, [1, moq_id]);
         sqlx::query("UPDATE config_output SET active = 1 WHERE id = 2")
             .execute(&pool)
             .await
@@ -902,10 +912,20 @@ mod tests {
     #[tokio::test]
     async fn output_selection_is_switched_atomically() {
         let pool = pool().await;
+        sqlx::query("UPDATE config_output SET active = 0, configured = 1 WHERE config_id = 1")
+            .execute(&pool)
+            .await
+            .unwrap();
         let mut transaction = pool.begin().await.unwrap();
         activate_output(&mut transaction, 1, 2).await.unwrap();
         transaction.commit().await.unwrap();
         assert_eq!(select_configuration(&pool, 1).await.unwrap().output_id, 2);
+        assert!(
+            !sqlx::query_scalar::<_, bool>("SELECT active FROM config_output WHERE id = 2")
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        );
 
         let mut transaction = pool.begin().await.unwrap();
         assert!(
@@ -957,8 +977,8 @@ mod tests {
         let pool = pool().await;
         sqlx::raw_sql(
             "UPDATE config_global SET logs = 'assets', playlists = 'assets',
-                public = 'assets', storage = 'assets';
-             UPDATE channels SET public = 'assets', playlists = 'assets', storage = 'assets';",
+                public = 'assets';
+             UPDATE channels SET public = 'assets', playlists = 'assets';",
         )
         .execute(&pool)
         .await
@@ -988,8 +1008,8 @@ mod tests {
         let pool = pool().await;
         sqlx::raw_sql(
             "UPDATE config_global SET logs = 'assets', playlists = 'assets',
-                public = 'assets', storage = 'assets';
-             UPDATE channels SET public = 'assets', playlists = 'assets', storage = 'assets';",
+                public = 'assets';
+             UPDATE channels SET public = 'assets', playlists = 'assets';",
         )
         .execute(&pool)
         .await
@@ -1024,8 +1044,8 @@ mod tests {
         let pool = pool().await;
         sqlx::raw_sql(
             "UPDATE config_global SET logs = 'assets', playlists = 'assets',
-                public = 'assets', storage = 'assets';
-             UPDATE channels SET public = 'assets', playlists = 'assets', storage = 'assets';",
+                public = 'assets';
+             UPDATE channels SET public = 'assets', playlists = 'assets';",
         )
         .execute(&pool)
         .await

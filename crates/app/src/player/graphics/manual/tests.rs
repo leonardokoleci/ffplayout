@@ -38,7 +38,7 @@ async fn wait_for_restore(manager: &ChannelManager) {
 async fn saved_settings_and_requested_states_survive_fresh_manager_and_restore_failures_are_isolated()
  {
     let (manager, pool) = test_support::channel_manager().await;
-    let root = manager.config.read().await.storage.path.clone();
+    let root = manager.storage.root.read().await.clone();
     tokio::fs::copy(
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests_assets/storage/media_images/animated-logo.gif"),
@@ -159,7 +159,7 @@ async fn saved_settings_and_requested_states_survive_fresh_manager_and_restore_f
 #[tokio::test]
 async fn bad_settings_stale_revisions_and_layer_limit_never_overwrite_saved_definitions() {
     let (manager, pool) = test_support::channel_manager().await;
-    let root = manager.config.read().await.storage.path.clone();
+    let root = manager.storage.root.read().await.clone();
     let revision = saved(&manager, 0, 1, "logo.png").await;
     assert!(
         command(manager.clone(), 0, json!({"action":"clear_all"}))
@@ -224,7 +224,7 @@ async fn bad_settings_stale_revisions_and_layer_limit_never_overwrite_saved_defi
 #[tokio::test]
 async fn hiding_and_stopping_keep_working_when_the_prepared_sources_symlink_becomes_invalid() {
     let (manager, pool) = test_support::channel_manager().await;
-    let root = manager.config.read().await.storage.path.clone();
+    let root = manager.storage.root.read().await.clone();
     let asset = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests_assets/storage/media_images/animated-logo.gif")
         .canonicalize()
@@ -289,7 +289,7 @@ async fn hiding_and_stopping_keep_working_when_the_prepared_sources_symlink_beco
 #[tokio::test]
 async fn applying_and_saving_fades_update_existing_controls_without_preparing_the_source_again() {
     let (manager, pool) = test_support::channel_manager().await;
-    let root = manager.config.read().await.storage.path.clone();
+    let root = manager.storage.root.read().await.clone();
     tokio::fs::copy(
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests_assets/storage/media_images/animated-logo.gif"),

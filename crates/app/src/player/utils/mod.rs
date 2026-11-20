@@ -27,12 +27,13 @@ pub mod json_serializer;
 pub mod json_validate;
 
 use crate::{
+    db::handles,
     player::controller::{
         ChannelManager,
         ProcessUnit::{self, *},
     },
     utils::{
-        config::{OutputMode::*, PlayoutConfig},
+        config::{OutputMode::*, PlayoutConfig, ProcessMode},
         errors::ProcessError,
         time_machine::time_now,
     },
@@ -195,10 +196,29 @@ pub async fn get_data_map(manager: &ChannelManager) -> Map<String, Value> {
     let current_time = time_in_seconds(&channel.timezone);
     let shift = channel.time_shift;
     let begin = media.begin.unwrap_or(0.0) - shift;
-    let played_time = current_time - begin;
+    let mut played_time = current_time - begin;
+
+    // A clip that crosses midnight produces a negative elapsed time in
+    // seconds-of-day arithmetic; wrap it into the actual elapsed amount.
+    if played_time < -86400.0 / 2.0 {
+        played_time += 86400.0;
+    }
 
     data_map.insert("index".to_string(), json!(media.index));
     data_map.insert("ingest".to_string(), json!(ingest_is_alive));
+
+    if config.mode == ProcessMode::Rundown {
+        let rundown_state = handles::select_rundown_state(&manager.db_pool, manager.id).await;
+        data_map.insert(
+            "rundown_revision".to_string(),
+            json!(rundown_state.revision),
+        );
+        data_map.insert(
+            "rundown_head".to_string(),
+            json!(rundown_state.head_item_id),
+        );
+    }
+
     let ingest_control = playback_control.live_ingest();
     let statuses = ingest_control.snapshot();
     let inputs: Vec<_> = listeners

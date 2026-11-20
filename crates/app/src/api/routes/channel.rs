@@ -116,7 +116,6 @@ pub async fn patch_channel(
 
         data.public = channel.public;
         data.playlists = channel.playlists;
-        data.storage = channel.storage;
     }
 
     let global = handles::select_global(&state.pool).await?;

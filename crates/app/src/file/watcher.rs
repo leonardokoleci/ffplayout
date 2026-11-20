@@ -1,5 +1,5 @@
 use std::{
-    path::Path,
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -31,26 +31,37 @@ pub async fn watch(
     sources: Arc<Mutex<Vec<Media>>>,
 ) -> Result<(), ServiceError> {
     let id = config.general.channel_id;
-    let path = Path::new(&config.channel.storage);
+    let folders: Vec<PathBuf> = config
+        .storage
+        .paths
+        .iter()
+        .filter(|path| path.is_dir())
+        .cloned()
+        .collect();
 
-    if !path.exists() {
-        return Err(ServiceError::NotFound(format!(
-            "Folder path does not exist: {path:?}"
-        )));
+    if folders.is_empty() {
+        return Err(ServiceError::NotFound(
+            "No existing media folder to watch".to_string(),
+        ));
     }
 
     debug!(channel = id;
-        "Monitor folder: <span class=\"log-addr\">{:?}</span>",
-        config.channel.storage
+        "Monitor folders: <span class=\"log-addr\">{:?}</span>",
+        folders
     );
 
     let (tx, rx) = channel();
     let mut debouncer = new_debouncer(Duration::from_secs(3), None, tx).map_err(|error| {
         ServiceError::Conflict(format!("Failed to create file watcher: {error}"))
     })?;
-    debouncer
-        .watch(path, RecursiveMode::Recursive)
-        .map_err(|error| ServiceError::Conflict(format!("Failed to watch {path:?}: {error}")))?;
+
+    for folder in &folders {
+        debouncer
+            .watch(folder, RecursiveMode::Recursive)
+            .map_err(|error| {
+                ServiceError::Conflict(format!("Failed to watch {folder:?}: {error}"))
+            })?;
+    }
 
     while is_alive.load(Ordering::SeqCst) {
         while let Ok(result) = rx.try_recv() {
@@ -151,10 +162,10 @@ mod tests {
     #[tokio::test]
     async fn missing_watch_directory_returns_error() {
         let mut config = PlayoutConfig::default();
-        config.channel.storage = std::env::temp_dir().join(format!(
+        config.storage.paths = vec![std::env::temp_dir().join(format!(
             "ffplayout-missing-watch-directory-{}",
             std::process::id()
-        ));
+        ))];
 
         let result = watch(
             config,

@@ -32,7 +32,7 @@ pub async fn select_related_channels(
         Some(id) => {
             const QUERY: &str =
                 "SELECT c.id, c.name, c.preview_url, c.extra_extensions, c.active, c.public, c.playlists,
-            c.storage, c.last_date, c.time_shift, c.timezone FROM channels c
+            c.last_date, c.time_shift, c.timezone FROM channels c
                 left join auth_user_channels uc on uc.channel_id = c.id
                 left join auth_user u on u.id = uc.user_id
              WHERE u.id = $1 ORDER BY c.id ASC;";
@@ -54,7 +54,7 @@ pub async fn update_channel(
     id: i32,
     channel: Channel,
 ) -> Result<SqliteQueryResult, ProcessError> {
-    const QUERY: &str = "UPDATE channels SET name = $2, preview_url = $3, extra_extensions = $4, public = $5, playlists = $6, storage = $7, timezone = $8 WHERE id = $1";
+    const QUERY: &str = "UPDATE channels SET name = $2, preview_url = $3, extra_extensions = $4, public = $5, playlists = $6, timezone = $7 WHERE id = $1";
 
     let result = sqlx::query(QUERY)
         .bind(id)
@@ -63,7 +63,6 @@ pub async fn update_channel(
         .bind(channel.extra_extensions)
         .bind(channel.public)
         .bind(channel.playlists)
-        .bind(channel.storage)
         .bind(channel.timezone.map(|tz| tz.to_string()))
         .execute(pool)
         .await?;
@@ -75,14 +74,13 @@ pub async fn insert_channel<'e, E>(executor: E, channel: Channel) -> Result<Chan
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    const QUERY: &str = "INSERT INTO channels (name, preview_url, extra_extensions, public, playlists, storage) VALUES($1, $2, $3, $4, $5, $6) RETURNING *";
+    const QUERY: &str = "INSERT INTO channels (name, preview_url, extra_extensions, public, playlists) VALUES($1, $2, $3, $4, $5) RETURNING *";
     let result = sqlx::query_as::<_, Channel>(QUERY)
         .bind(channel.name)
         .bind(channel.preview_url)
         .bind(channel.extra_extensions)
         .bind(channel.public)
         .bind(channel.playlists)
-        .bind(channel.storage)
         .fetch_one(executor)
         .await?;
 
@@ -157,8 +155,27 @@ pub async fn create_channel_records(
     handles::insert_source(&mut transaction, config_id).await?;
     handles::new_channel_presets(&mut *transaction, config_id).await?;
 
+    let mut hls_output_id = None;
     for (index, output) in outputs.iter().enumerate() {
-        handles::insert_output(&mut *transaction, config_id, output, index == 0).await?;
+        let output_id =
+            handles::insert_output(&mut *transaction, config_id, output, index == 0).await?;
+
+        if output.name == "hls" {
+            hls_output_id = Some(output_id);
+        }
+    }
+
+    if let Some(hls_output_id) = hls_output_id {
+        let mut moq = models::Output::new(channel.id, OutputMode::Moq);
+        moq.label = "Preview (MoQ)".to_string();
+        moq.configured = true;
+        moq.encoding_source_id = Some(hls_output_id);
+        moq.encoding_variant = outputs[0]
+            .hls_playlist_name
+            .clone()
+            .unwrap_or_else(|| "stream".to_string());
+
+        handles::insert_output(&mut *transaction, config_id, &moq, true).await?;
     }
 
     handles::insert_recording(&mut transaction, config_id, channel.id).await?;
@@ -351,6 +368,45 @@ mod tests {
                 .await
                 .unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn new_channels_get_a_private_moq_preview_output_sharing_the_hls_encoder() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        handles::db_migrate(&pool).await.unwrap();
+
+        let channel = create_channel_records(
+            &pool,
+            Channel {
+                name: "preview-test".to_string(),
+                ..Channel::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let outputs = handles::select_outputs(&pool, channel.id).await.unwrap();
+        let hls = outputs
+            .iter()
+            .find(|output| output.name == "hls")
+            .expect("HLS output exists");
+        let moq = outputs
+            .iter()
+            .find(|output| output.name == "moq")
+            .expect("preview MoQ output exists");
+
+        assert!(moq.active);
+        assert!(moq.configured);
+        assert!(!moq.public_moq);
+        assert!(moq.share_encoding);
+        assert_eq!(moq.label, "Preview (MoQ)");
+        assert_eq!(moq.encoding_source_id, Some(hls.id));
+        assert_eq!(moq.encoding_variant, "stream");
+        assert!(moq.fps == hls.fps);
     }
 
     #[tokio::test]

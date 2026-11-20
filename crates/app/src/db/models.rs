@@ -28,7 +28,6 @@ pub struct GlobalSettings {
     pub logs: String,
     pub playlists: String,
     pub public: String,
-    pub storage: String,
     pub shared: bool,
     pub smtp_server: String,
     pub smtp_user: String,
@@ -52,7 +51,6 @@ impl GlobalSettings {
                 logs: String::new(),
                 playlists: String::new(),
                 public: String::new(),
-                storage: String::new(),
                 shared: false,
                 smtp_server: String::new(),
                 smtp_user: String::new(),
@@ -77,7 +75,6 @@ pub struct Channel {
     pub active: bool,
     pub public: String,
     pub playlists: String,
-    pub storage: String,
     pub last_date: Option<String>,
     pub time_shift: f64,
     #[serde(default)]
@@ -109,7 +106,6 @@ impl FromRow<'_, SqliteRow> for Channel {
             active: row.try_get("active").unwrap_or_default(),
             public: row.try_get("public").unwrap_or_default(),
             playlists: row.try_get("playlists").unwrap_or_default(),
-            storage: row.try_get("storage").unwrap_or_default(),
             last_date: row.try_get("last_date").unwrap_or_default(),
             time_shift: row.try_get("time_shift").unwrap_or_default(),
             timezone,
@@ -119,6 +115,39 @@ impl FromRow<'_, SqliteRow> for Channel {
 
 fn default_id() -> i32 {
     1
+}
+
+/// One media entry in a channel's continuous rundown queue.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, sqlx::FromRow)]
+pub struct RundownItem {
+    pub id: i64,
+    pub channel_id: i32,
+    pub position: i64,
+    pub source: String,
+    pub seek: f64,
+    pub out: f64,
+    pub duration: f64,
+    pub duration_audio: f64,
+    pub title: Option<String>,
+    pub ad: bool,
+    pub custom_filter: String,
+    pub audio: String,
+    pub created_at: i64,
+    pub updated_at: Option<i64>,
+}
+
+/// Playback cursor for the rundown queue: which item is live, the absolute
+/// (UTC epoch) moment it started, whether the queue is drained, whether an
+/// operator command selected the current head for immediate takeover, and a
+/// counter bumped on every queue change.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, sqlx::FromRow)]
+pub struct RundownState {
+    pub channel_id: i32,
+    pub head_item_id: Option<i64>,
+    pub head_start_epoch: f64,
+    pub drained: bool,
+    pub takeover: bool,
+    pub revision: i64,
 }
 
 fn default_true() -> bool {
@@ -384,6 +413,8 @@ pub struct Configuration {
     pub processing_logo_position: String,
     pub processing_logo_high_quality: bool,
     pub processing_graphics_cache_mib: u32,
+    #[serde(default)]
+    pub processing_graphics_browser: Option<String>,
     pub processing_volume: f64,
     pub processing_loudness_scope: String,
     pub processing_compressor_ratio: f64,
@@ -461,6 +492,7 @@ impl Configuration {
             processing_logo_position: config.processing.logo_position,
             processing_logo_high_quality: config.processing.logo_high_quality,
             processing_graphics_cache_mib: config.processing.graphics_cache_mib,
+            processing_graphics_browser: config.processing.graphics_browser,
             processing_volume: config.audio.volume,
             processing_loudness_scope: config.audio.loudness_scope.clone(),
             processing_compressor_ratio: config.audio.compressor_ratio,
@@ -678,7 +710,6 @@ pub struct SetupSettings {
     pub logs: String,
     pub playlists: String,
     pub public: String,
-    pub storage: String,
     pub shared: bool,
     pub smtp_server: String,
     pub smtp_user: String,
@@ -693,7 +724,6 @@ impl From<GlobalSettings> for SetupSettings {
             logs: settings.logs,
             playlists: settings.playlists,
             public: settings.public,
-            storage: settings.storage,
             shared: settings.shared,
             smtp_server: settings.smtp_server,
             smtp_user: settings.smtp_user,
@@ -709,7 +739,6 @@ pub struct InitialSetup {
     pub settings: SetupSettings,
     pub channel_public: String,
     pub channel_playlists: String,
-    pub channel_storage: String,
     pub username: String,
     pub mail: String,
     pub password_hash: String,

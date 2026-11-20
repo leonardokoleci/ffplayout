@@ -12,7 +12,7 @@ import { moqRelayUrl, type MoqBootstrap } from '@/composables/moqConnection'
 const props = withDefaults(defineProps<{ channel: number; publicAccess?: boolean; audioMeter?: boolean }>(), {
     publicAccess: false,
 })
-const emit = defineEmits<{ audioLevel: [level: AudioLevel | null] }>()
+const emit = defineEmits<{ audioLevel: [level: AudioLevel | null]; unavailable: [reason: string] }>()
 const { t } = useI18n()
 // Explicitly opt in before mounting; production and public playback stay quiet.
 const diagnosticsEnabled =
@@ -34,6 +34,29 @@ const measurements = shallowRef<ReturnType<typeof moqDiagnostics>>()
 const report = ref('')
 let player: MoqWatch | undefined
 let disposed = false
+let unavailableReported = false
+let connected = false
+let startupTimer: ReturnType<typeof setTimeout> | undefined
+
+function reportUnavailable(reason: unknown) {
+    if (disposed || unavailableReported) return
+    unavailableReported = true
+    if (startupTimer) {
+        clearTimeout(startupTimer)
+        startupTimer = undefined
+    }
+    emit('unavailable', reason instanceof Error ? reason.message : String(reason))
+}
+
+// Browsers block unmuted autoplay: start playing silently and unmute on the
+// first interaction anywhere on the page.
+function unmuteOnGesture() {
+    window.removeEventListener('pointerdown', unmuteOnGesture)
+    window.removeEventListener('keydown', unmuteOnGesture)
+    if (!disposed && player) {
+        player.muted = false
+    }
+}
 
 async function loadConfig(signal?: AbortSignal): Promise<MoqBootstrap> {
     const path = `${props.publicAccess ? '/moq/config' : '/api/moq/config'}?channel=${props.channel}`
@@ -59,6 +82,7 @@ async function connect(prefetched?: MoqBootstrap, signal?: AbortSignal) {
         if (!disposed && !signal?.aborted) {
             error.value = true
             status.value = reason instanceof Error ? reason.message : String(reason)
+            reportUnavailable(reason)
         }
         throw reason
     }
@@ -96,14 +120,24 @@ onMounted(async () => {
         player.append(canvas)
         ui.append(player)
         host.value.append(ui)
-        player.paused = true
-        player.muted = false
+        player.paused = false
+        player.muted = true
+        window.addEventListener('pointerdown', unmuteOnGesture)
+        window.addEventListener('keydown', unmuteOnGesture)
         player.buffer = 100 as MoqWatch['buffer']
         player.signals.run((effect) => {
             const state = effect.get(player!.connection.status)
             const broadcast = effect.get(player!.broadcast.out.status)
+            connected = state === 'connected'
+            if (connected && startupTimer) {
+                clearTimeout(startupTimer)
+                startupTimer = undefined
+            }
             connectionState.value = state !== 'connected' ? 'connecting' : broadcast === 'offline' ? 'waiting' : ''
         })
+        startupTimer = setTimeout(() => {
+            if (!disposed && !connected) reportUnavailable('MoQ connection timeout')
+        }, 12_000)
         resumeMoqAudio(player.signals, player.audio.out.context, player.controls, document, window)
         if (diagnosticsEnabled) {
             const { moqDiagnostics } = await import('@/composables/moqDiagnostics')
@@ -133,11 +167,18 @@ onMounted(async () => {
     } catch (reason) {
         error.value = true
         status.value = reason instanceof Error ? reason.message : String(reason)
+        reportUnavailable(reason)
     }
 })
 
 onBeforeUnmount(() => {
     disposed = true
+    window.removeEventListener('pointerdown', unmuteOnGesture)
+    window.removeEventListener('keydown', unmuteOnGesture)
+    if (startupTimer) {
+        clearTimeout(startupTimer)
+        startupTimer = undefined
+    }
     measurements.value?.close()
     if (player) {
         player.paused = true

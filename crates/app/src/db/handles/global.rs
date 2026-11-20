@@ -3,7 +3,7 @@ use sqlx::sqlite::{SqlitePool, SqliteQueryResult};
 use crate::{db::GlobalSettings, utils::errors::ProcessError};
 
 pub async fn select_global(pool: &SqlitePool) -> Result<GlobalSettings, ProcessError> {
-    const QUERY: &str = "SELECT id, secret, logs, playlists, public, storage, shared,
+    const QUERY: &str = "SELECT id, secret, logs, playlists, public, shared,
         smtp_server, smtp_user, smtp_password, smtp_starttls, smtp_port,
         notification_server, notification_token, setup_completed
         FROM config_global WHERE id = 1";
@@ -17,16 +17,16 @@ pub async fn update_global(
     pool: &SqlitePool,
     global: GlobalSettings,
 ) -> Result<SqliteQueryResult, ProcessError> {
-    const QUERY: &str = "UPDATE config_global SET logs = $2, playlists = $3, public = $4, storage = $5, shared = $6,
-            smtp_server = $7, smtp_user = $8, smtp_password = $9, smtp_starttls = $10,
-            smtp_port = $11, notification_server = $12, notification_token = $13 WHERE id = 1";
+    const QUERY: &str =
+        "UPDATE config_global SET logs = $2, playlists = $3, public = $4, shared = $5,
+            smtp_server = $6, smtp_user = $7, smtp_password = $8, smtp_starttls = $9,
+            smtp_port = $10, notification_server = $11, notification_token = $12 WHERE id = 1";
 
     let result = sqlx::query(QUERY)
         .bind(global.id)
         .bind(global.logs)
         .bind(global.playlists)
         .bind(global.public)
-        .bind(global.storage)
         .bind(global.shared)
         .bind(global.smtp_server)
         .bind(global.smtp_user)

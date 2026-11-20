@@ -7,7 +7,7 @@ use lexical_sort::natural_lexical_cmp;
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 
-use crate::utils::errors::ServiceError;
+use crate::utils::{errors::ServiceError, paths::is_protected_system_path};
 
 use super::{ensure_path_within_root, local::LocalStorage};
 
@@ -63,7 +63,15 @@ fn selection_path(root: &Path, source: &str) -> Result<PathBuf, ServiceError> {
     } else {
         root.join(source)
     };
-    ensure_path_within_root(root, &path)?;
+
+    // Selections inside the storage root keep the containment check, so
+    // symlink escapes stay blocked. Absolute selections may point anywhere
+    // except into a protected system directory.
+    if path.starts_with(root) {
+        ensure_path_within_root(root, &path)?;
+    } else if is_protected_system_path(&path) {
+        return Err(ServiceError::Forbidden("Access denied".into()));
+    }
 
     Ok(path)
 }
@@ -142,7 +150,7 @@ impl LocalStorage {
             let child_path = child.path();
             let name = child.file_name().to_string_lossy().into_owned();
 
-            if name.starts_with('.') || ensure_path_within_root(&root, &child_path).is_err() {
+            if name.starts_with('.') || is_protected_system_path(&child_path) {
                 continue;
             }
 
@@ -166,28 +174,49 @@ impl LocalStorage {
         folders.sort_by(|a, b| natural_lexical_cmp(&a.name, &b.name));
         files.sort_by(|a, b| natural_lexical_cmp(&a.name, &b.name));
 
-        let mut current = root.clone();
-        let mut breadcrumbs = vec![Entry {
-            name: root
-                .file_name()
-                .unwrap_or(root.as_os_str())
-                .to_string_lossy()
-                .into_owned(),
-            path: root.to_string_lossy().into_owned(),
-            size: None,
-        }];
+        let mut breadcrumbs = Vec::new();
 
-        for component in path
-            .strip_prefix(&root)
-            .unwrap_or(Path::new(""))
-            .components()
-        {
-            current.push(component);
+        if path.starts_with(&root) {
+            let mut current = root.clone();
             breadcrumbs.push(Entry {
-                name: component.as_os_str().to_string_lossy().into_owned(),
-                path: current.to_string_lossy().into_owned(),
+                name: root
+                    .file_name()
+                    .unwrap_or(root.as_os_str())
+                    .to_string_lossy()
+                    .into_owned(),
+                path: root.to_string_lossy().into_owned(),
                 size: None,
             });
+
+            for component in path
+                .strip_prefix(&root)
+                .unwrap_or(Path::new(""))
+                .components()
+            {
+                current.push(component);
+                breadcrumbs.push(Entry {
+                    name: component.as_os_str().to_string_lossy().into_owned(),
+                    path: current.to_string_lossy().into_owned(),
+                    size: None,
+                });
+            }
+        } else {
+            // An external selection gets its full path as breadcrumbs,
+            // starting at the filesystem root.
+            let ancestors = path.ancestors().collect::<Vec<_>>();
+
+            for ancestor in ancestors.into_iter().rev() {
+                let name = ancestor
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| ancestor.to_string_lossy().into_owned());
+
+                breadcrumbs.push(Entry {
+                    name,
+                    path: ancestor.to_string_lossy().into_owned(),
+                    size: None,
+                });
+            }
         }
 
         Ok(Listing {

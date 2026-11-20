@@ -31,10 +31,10 @@ impl FolderSource {
         let mut media_list = vec![];
         let mut index: usize = 0;
 
-        if !config.storage.paths.is_empty() && config.general.generate.is_some() {
+        // Media can live anywhere; folder mode sources are the absolute
+        // paths configured in the channel's storage settings.
+        if !config.storage.paths.is_empty() {
             path_list.extend(&config.storage.paths);
-        } else {
-            path_list.push(&config.channel.storage);
         }
 
         if let Some(dates) = &config.general.generate {

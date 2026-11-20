@@ -4,7 +4,6 @@ use std::{
 };
 
 use argon2::{Argon2, PasswordHasher};
-use log::warn;
 use serde::Deserialize;
 use sqlx::SqlitePool;
 use tokio::{
@@ -18,7 +17,6 @@ use crate::{
         handles,
         models::{InitialSetup, SetupSettings},
     },
-    file::init_storage,
     player::controller::ChannelController,
     utils::{
         channels::initialize_channels,
@@ -30,6 +28,40 @@ use crate::{
 };
 
 static SETUP_LOCK: Mutex<()> = Mutex::const_new(());
+
+/// Suggest installation paths for a fresh instance so the operator does not
+/// have to invent them: conventional system directories on Unix, directories
+/// next to the working directory on Windows, where system-wide paths are not
+/// usable. The database seeds Unix system paths even on other platforms, so
+/// any value that is not a valid absolute path on the current OS is replaced.
+pub fn with_path_defaults(mut settings: SetupSettings) -> SetupSettings {
+    let (logs, playlists, public): (String, String, String) = if cfg!(windows) {
+        let base = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let path = |name: &str| base.join(name).to_string_lossy().into_owned();
+
+        (path("logs"), path("playlists"), path("public"))
+    } else {
+        (
+            "/var/log/ffplayout".to_string(),
+            "/var/lib/ffplayout/playlists".to_string(),
+            "/usr/share/ffplayout/public".to_string(),
+        )
+    };
+
+    let fix = |value: &str, fallback: &str| {
+        if Path::new(value.trim()).is_absolute() {
+            value.to_string()
+        } else {
+            fallback.to_string()
+        }
+    };
+
+    settings.logs = fix(&settings.logs, &logs);
+    settings.playlists = fix(&settings.playlists, &playlists);
+    settings.public = fix(&settings.public, &public);
+
+    settings
+}
 
 #[derive(Debug, Deserialize)]
 pub struct SetupRequest {
@@ -46,7 +78,6 @@ fn validate_setup_paths(settings: &SetupSettings) -> Result<(), ServiceError> {
         ("Logging", settings.logs.as_str()),
         ("Playlist", settings.playlists.as_str()),
         ("Public", settings.public.as_str()),
-        ("Storage", settings.storage.as_str()),
     ]
     .into_iter()
     .try_for_each(|(name, path)| {
@@ -100,14 +131,12 @@ pub async fn complete_setup(
         ("Logging", PathBuf::from(&settings.logs)),
         ("Public", PathBuf::from(&settings.public)),
         ("Playlist", PathBuf::from(&settings.playlists)),
-        ("Storage", PathBuf::from(&settings.storage)),
     ];
 
     if settings.shared {
         paths.extend([
             ("Public", PathBuf::from(channel_path(&settings.public))),
             ("Playlist", PathBuf::from(channel_path(&settings.playlists))),
-            ("Storage", PathBuf::from(channel_path(&settings.storage))),
         ]);
     }
 
@@ -116,18 +145,12 @@ pub async fn complete_setup(
     let setup = InitialSetup {
         channel_public: channel_path(&settings.public),
         channel_playlists: channel_path(&settings.playlists),
-        channel_storage: channel_path(&settings.storage),
         settings,
         username: data.username,
         mail: data.mail,
         password_hash,
         two_factor: data.two_factor,
     };
-    let storage = init_storage(PathBuf::from(&setup.channel_storage), Vec::new()).await?;
-
-    if let Err(error) = storage.copy_assets().await {
-        warn!("Could not copy initial storage assets: {error}");
-    }
 
     let snapshot = handles::initialize_setup_with_rollback(pool, &setup).await?;
     let pending_controllers = Arc::new(RwLock::new(ChannelController::new()));
@@ -139,7 +162,6 @@ pub async fn complete_setup(
         pending_queues.clone(),
         pending_shutdown.clone(),
         system,
-        false,
     )
     .await;
 
@@ -188,7 +210,6 @@ mod tests {
                 logs: directory("logs"),
                 playlists: directory("playlists"),
                 public: directory("public"),
-                storage: directory("storage"),
                 shared: false,
                 smtp_server: String::new(),
                 smtp_user: String::new(),
@@ -201,6 +222,36 @@ mod tests {
             password: "setup-password".to_string(),
             two_factor: false,
         }
+    }
+
+    #[test]
+    fn path_defaults_fill_empty_fields_with_absolute_directories() {
+        let mut settings = request(Path::new("")).settings;
+        settings.logs = String::new();
+        settings.playlists = String::new();
+        settings.public = "C:\\custom\\public".to_string();
+
+        let settings = with_path_defaults(settings);
+
+        for path in [&settings.logs, &settings.playlists] {
+            assert!(Path::new(path).is_absolute(), "{path} is not absolute");
+        }
+
+        assert_eq!(settings.public, "C:\\custom\\public");
+    }
+
+    #[test]
+    fn path_defaults_replace_foreign_system_paths() {
+        let mut settings = request(Path::new("")).settings;
+        settings.logs = "/var/log/ffplayout".to_string();
+        settings.playlists = "playlists".to_string();
+
+        let settings = with_path_defaults(settings);
+
+        assert!(Path::new(&settings.logs).is_absolute());
+        assert_ne!(settings.logs, "/var/log/ffplayout");
+        assert!(Path::new(&settings.playlists).is_absolute());
+        assert_ne!(settings.playlists, "playlists");
     }
 
     async fn setup_state() -> (
@@ -264,7 +315,7 @@ mod tests {
         let (pool, controllers, queues) = setup_state().await;
         let root = root();
         let global_before = handles::select_global(&pool).await.unwrap();
-        let channel_before = handles::select_channel(&pool, &1).await.unwrap();
+        let _channel_before = handles::select_channel(&pool, &1).await.unwrap();
         sqlx::query("UPDATE config_live_input SET options = 'invalid-json' WHERE backend = 'rtmp'")
             .execute(&pool)
             .await
@@ -282,11 +333,10 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(handles::count_users(&pool).await.unwrap(), 0);
         let global = handles::select_global(&pool).await.unwrap();
-        let channel = handles::select_channel(&pool, &1).await.unwrap();
+        let _channel = handles::select_channel(&pool, &1).await.unwrap();
 
         assert!(!global.setup_completed);
         assert_eq!(global.logs, global_before.logs);
-        assert_eq!(channel.storage, channel_before.storage);
         assert!(controllers.read().await.managers.is_empty());
         assert!(queues.lock().await.is_empty());
         sqlx::query("UPDATE config_live_input SET options = '{}' WHERE backend = 'rtmp'")
@@ -356,12 +406,11 @@ mod tests {
         tokio::fs::remove_dir_all(root).await.unwrap();
     }
 
-    fn settings(storage: &str) -> SetupSettings {
+    fn settings(public: &str) -> SetupSettings {
         SetupSettings {
             logs: "/var/log/ffplayout".to_string(),
             playlists: "/var/lib/ffplayout/playlists".to_string(),
-            public: "/usr/share/ffplayout/public".to_string(),
-            storage: storage.to_string(),
+            public: public.to_string(),
             shared: false,
             smtp_server: String::new(),
             smtp_user: String::new(),

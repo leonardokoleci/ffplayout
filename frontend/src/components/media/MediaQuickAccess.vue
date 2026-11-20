@@ -1,66 +1,58 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
-import { computed, onMounted, ref, watch } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 
 import { useConfig } from '@/stores/config'
 import { useMedia } from '@/stores/media'
 
-import MediaTreeItem from './MediaTreeItem.vue'
-
 const { t } = useI18n()
 
 const mediaStore = useMedia()
-const configStore = useConfig()
 const { i } = storeToRefs(useConfig())
 
-const props = withDefaults(
-    defineProps<{
-        compact?: boolean
-        showTree?: boolean
-        dropFiles?: (files: File[], targetPath: string) => Promise<void> | void
-        preview?: (path: string) => Promise<void> | void
-    }>(),
-    { showTree: true },
-)
+const manualPath = ref('')
 
-// Compact mode runs without the full browse flow: the tree root name comes
-// from the channel storage config and the tree loads its content itself.
-const rootName = computed(() => {
-    if (props.compact) {
-        const storage = configStore.channels[configStore.i]?.storage ?? ''
+async function pinManualPath() {
+    const path = manualPath.value.trim().replace(/\\/g, '/')
+    manualPath.value = ''
 
-        return storage.split('/').filter(Boolean).slice(-1)[0] || storage
+    if (path && !mediaStore.preferredFolders.includes(path)) {
+        await mediaStore.togglePreferredFolder(path)
     }
+}
 
-    return mediaStore.folderTree.parent
+const props = defineProps<{
+    compact?: boolean
+    dropFiles?: (files: File[], targetPath: string) => Promise<void> | void
+}>()
+
+function openPath(path: string) {
+    mediaStore.getTree(path.replace(/\\/g, '/'))
+}
+
+onMounted(async () => {
+    mediaStore.loadPreferredFolders()
+
+    const start = await mediaStore.initialBrowsePath()
+
+    if (start) {
+        openPath(start)
+    }
 })
 
-onMounted(() => {
-    if (props.compact) {
-        mediaStore.setTreeExpanded('', true)
-        mediaStore.loadPreferredFolders()
-    } else if (!mediaStore.folderTree.parent) {
-        mediaStore.getTree('')
-    }
-})
+watch([i], async () => {
+    const start = await mediaStore.initialBrowsePath()
 
-watch([i], () => {
-    if (props.compact) {
-        mediaStore.resetTree()
-        mediaStore.setTreeExpanded('', true)
-        mediaStore.loadPreferredFolders()
-    } else {
-        mediaStore.getTree('')
+    if (start) {
+        openPath(start)
     }
 })
 
 const dropActivePath = ref('')
 
 function folderName(path: string) {
-    const name = path.split('/').filter(Boolean).slice(-1)[0]
-
-    return name || mediaStore.folderTree.parent || path
+    return path.split('/').filter(Boolean).slice(-1)[0] || path
 }
 
 function onDragOverQuick(event: DragEvent, path: string) {
@@ -91,7 +83,7 @@ async function onDropQuick(event: DragEvent, path: string) {
 
     if (itemData) {
         const item = JSON.parse(itemData)
-        const source = `/${mediaStore.folderTree.source}/${item.name}`.replace(/\/[/]+/g, '/')
+        const source = `${mediaStore.folderTree.source}/${item.name}`.replace(/\/[/]+/g, '/')
 
         await mediaStore.moveItem(source, path || '/', item.name)
     }
@@ -103,8 +95,45 @@ async function onDropQuick(event: DragEvent, path: string) {
             class="shrink-0 px-2 font-bold uppercase text-base-content/60"
             :class="compact ? 'pt-1 pb-0.5 text-[10px]' : 'pt-2 pb-1 text-xs'"
         >
+            {{ t('media.drives') }}
+        </div>
+
+        <ul class="list-none px-1 border-b border-base-content/20" :class="[compact ? 'pb-0.5' : 'pb-1', compact ? 'shrink-0' : '']">
+            <li
+                v-for="drive in mediaStore.drives"
+                :key="drive"
+                class="group flex items-center gap-1 rounded px-1 cursor-pointer hover:bg-base-100/60"
+                :class="[compact ? 'py-0 text-xs' : 'py-0.5 text-sm']"
+                :title="drive"
+                @click="openPath(drive)"
+            >
+                <i class="bi-device-hdd shrink-0" />
+                <span class="truncate flex-1">{{ drive.replace(/\\/g, '/') }}</span>
+            </li>
+        </ul>
+
+        <div
+            class="shrink-0 px-2 font-bold uppercase text-base-content/60"
+            :class="compact ? 'pt-1 pb-0.5 text-[10px]' : 'pt-2 pb-1 text-xs'"
+        >
             {{ t('media.quickAccess') }}
         </div>
+
+        <form
+            class="shrink-0 flex gap-1 px-1 border-b border-base-content/20 items-center"
+            :class="compact ? 'py-0.5' : 'py-1'"
+            @submit.prevent="pinManualPath"
+        >
+            <input
+                v-model="manualPath"
+                type="text"
+                class="input input-xs w-full"
+                :placeholder="t('media.addFolder')"
+            />
+            <button type="submit" class="btn btn-xs btn-ghost px-1" :title="t('media.addFolder')">
+                <i class="bi-plus-lg" />
+            </button>
+        </form>
 
         <ul
             v-if="mediaStore.preferredFolders.length"
@@ -117,7 +146,7 @@ async function onDropQuick(event: DragEvent, path: string) {
                 class="group flex items-center gap-1 rounded px-1 cursor-pointer hover:bg-base-100/60"
                 :class="[compact ? 'py-0 text-xs' : 'py-0.5 text-sm', { 'bg-base-100/80!': dropActivePath === path }]"
                 :title="path"
-                @click="compact ? mediaStore.revealTreePath(path) : mediaStore.getTree(path)"
+                @click="openPath(path)"
                 @drop="onDropQuick($event, path)"
                 @dragover="onDragOverQuick($event, path)"
                 @dragleave="onDragLeaveQuick(path)"
@@ -125,7 +154,7 @@ async function onDropQuick(event: DragEvent, path: string) {
                 <i class="bi-star-fill text-warning shrink-0" />
                 <span
                     class="truncate flex-1"
-                    :class="{ 'font-bold': compact ? mediaStore.treePath === path : mediaStore.currentPath === path }"
+                    :class="{ 'font-bold': mediaStore.currentPath === path }"
                 >
                     {{ folderName(path) }}
                 </span>
@@ -145,17 +174,5 @@ async function onDropQuick(event: DragEvent, path: string) {
         >
             {{ t('media.quickAccessHint') }}
         </div>
-
-        <ul v-if="rootName && showTree" class="list-none pt-1" :class="compact ? 'flex-1 min-h-0 overflow-y-auto' : ''">
-            <MediaTreeItem
-                :key="rootName"
-                :name="rootName"
-                :path="''"
-                :depth="0"
-                :compact="compact"
-                :drop-files="dropFiles"
-                :preview="preview"
-            />
-        </ul>
     </div>
 </template>

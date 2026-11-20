@@ -33,15 +33,15 @@ pub async fn get_system_stat(
     )?;
     user.ensure_channel_or_admin(id)?;
 
-    let manager = {
+    // Validates that the channel exists.
+    {
         let guard = state.controller.read().await;
-        guard.get(id)
+        guard
+            .get(id)
+            .ok_or_else(|| ServiceError::BadRequest(format!("Channel {id} not found!")))?;
     }
-    .ok_or_else(|| ServiceError::BadRequest(format!("Channel {id} not found!")))?;
 
-    let config = manager.config.read().await.clone();
-
-    let stat = state.system.stat(&config).await;
+    let stat = state.system.stat().await;
 
     Ok(Json(stat))
 }

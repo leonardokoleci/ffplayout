@@ -134,8 +134,8 @@ pub(crate) async fn command(
     configure_row(&mut row, action, &data)?;
 
     if action != "stop" && !(action == "visibility" && !row.visible) {
-        let config = manager.config.read().await.clone();
-        settings::validate(&row.settings, &config.storage.path).map_err(|error| {
+        let root = manager.storage.root.read().await.clone();
+        settings::validate(&row.settings, &root).map_err(|error| {
             ServiceError::BadRequest(format!("Invalid graphic settings: {error:#}"))
         })?;
     }

@@ -24,7 +24,7 @@ pub async fn get_setup_status(
 
     Ok(Json(SetupStatus {
         required,
-        settings: required.then(|| settings.into()),
+        settings: required.then(|| setup::with_path_defaults(settings.into())),
     }))
 }
 

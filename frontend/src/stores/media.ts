@@ -10,10 +10,34 @@ import { playlistOperations } from '../composables/helper'
 
 const { genUID } = playlistOperations()
 
+// Sources of extra roots are absolute paths (a Windows drive or any absolute
+// path on Unix), while storage-rooted sources never start with a separator.
+export function isExtraRootSource(source: string) {
+    return /^[A-Za-z]:[\\/]/.test(source) || source.startsWith('/')
+}
+
+export function joinBrowsePath(parent: string, name: string) {
+    if (isExtraRootSource(parent)) {
+        return `${parent}/${name}`.replace(/\\/g, '/').replace(/\/[/]+/g, '/')
+    }
+
+    return `/${parent}/${name}`.replace(/\/[/]+/g, '/')
+}
+
+// Parent of an absolute or storage-relative browse path, without a trailing
+// separator.
+export function parentBrowsePath(path: string) {
+    const normalized = path.replace(/\\/g, '/').replace(/\/+$/, '')
+    const segments = normalized.split('/')
+
+    return segments.slice(0, -1).join('/') || '/'
+}
+
 export const useMedia = defineStore('media', {
     state: () => ({
         currentPath: '',
         crumbs: [] as Crumb[],
+        selectedFiles: [] as string[],
         folderTree: {
             source: '',
             parent: '',
@@ -28,53 +52,40 @@ export const useMedia = defineStore('media', {
         } as FolderObject,
         folderCrumbs: [] as Crumb[],
         preferredFolders: [] as string[],
+        drives: [] as string[],
         isLoading: false,
-        treeVersion: 0,
-        treePath: '',
-        treeNavVersion: 0,
-        expandedFolders: [] as string[],
     }),
 
     getters: {
         isPreferred: (state) => {
             return (path: string) => state.preferredFolders.includes(path)
         },
-        isTreeExpanded: (state) => {
-            return (path: string) => state.expandedFolders.includes(path)
-        },
     },
     actions: {
-        resetTree() {
-            this.treePath = ''
-            this.expandedFolders = []
-        },
+        async loadDrives() {
+            const authStore = useAuth()
+            const configStore = useConfig()
+            const id = configStore.channels[configStore.i]?.id
 
-        setTreeExpanded(path: string, value: boolean) {
-            if (value) {
-                if (!this.expandedFolders.includes(path)) {
-                    this.expandedFolders.push(path)
-                }
-            } else {
-                this.expandedFolders = this.expandedFolders.filter((folder) => folder !== path)
-            }
-        },
+            try {
+                const roots = await authFetch<string[]>(`/api/file/${id}/drives`, {
+                    headers: { ...authStore.authHeader },
+                })
 
-        // Expand the whole chain from the tree root down to the given folder,
-        // so the compact tree can reveal it even when its ancestors were
-        // collapsed and not loaded yet.
-        revealTreePath(path: string) {
-            this.treePath = path
-            this.treeNavVersion += 1
-
-            const chain: string[] = ['']
-            let current = ''
-
-            for (const segment of path.split('/').filter(Boolean)) {
-                current += `/${segment}`
-                chain.push(current)
+                this.drives = Array.isArray(roots) ? roots : []
+            } catch {
+                this.drives = []
             }
 
-            this.expandedFolders = Array.from(new Set([...this.expandedFolders, ...chain]))
+            return this.drives
+        },
+
+        // The browser starts on the first starred folder, or the first drive
+        // when nothing is pinned.
+        async initialBrowsePath(): Promise<string> {
+            const [drives] = await Promise.all([this.loadDrives(), this.loadPreferredFolders()])
+
+            return this.preferredFolders[0] ?? drives[0] ?? ''
         },
 
         loadPreferredFolders() {
@@ -155,7 +166,6 @@ export const useMedia = defineStore('media', {
                 body: JSON.stringify({ source, target }),
             })
                 .then(() => {
-                    this.treeVersion += 1
                     this.getTree(this.currentPath)
                 })
                 .catch((e) => {
@@ -182,20 +192,31 @@ export const useMedia = defineStore('media', {
                 body: JSON.stringify({ source: path, folders_only: foldersOnly }),
             })
                 .then((data) => {
-                    const pathStr = `${data.parent}/` + data.source
-                    const pathArr = pathStr.split('/')
+                    if (isExtraRootSource(data.source)) {
+                        // Breadcrumbs of an absolute extra-root path are the
+                        // path segments themselves.
+                        root = ''
 
-                    if (path && path !== '/') {
-                        for (const crumb of pathArr) {
-                            if (crumb === data.parent) {
-                                crumbs.push({ text: crumb, path: root })
-                            } else if (crumb) {
-                                root += crumb + '/'
-                                crumbs.push({ text: crumb, path: root })
-                            }
+                        for (const segment of data.source.split('/').filter(Boolean)) {
+                            root += `${segment}/`
+                            crumbs.push({ text: segment, path: root })
                         }
                     } else {
-                        crumbs.push({ text: data.parent, path: '' })
+                        const pathStr = `${data.parent}/` + data.source
+                        const pathArr = pathStr.split('/')
+
+                        if (path && path !== '/') {
+                            for (const crumb of pathArr) {
+                                if (crumb === data.parent) {
+                                    crumbs.push({ text: crumb, path: root })
+                                } else if (crumb) {
+                                    root += crumb + '/'
+                                    crumbs.push({ text: crumb, path: root })
+                                }
+                            }
+                        } else {
+                            crumbs.push({ text: data.parent, path: '' })
+                        }
                     }
 
                     if (foldersOnly) {
@@ -209,6 +230,8 @@ export const useMedia = defineStore('media', {
                     } else {
                         this.currentPath = path
                         this.crumbs = crumbs
+                        // A new folder listing invalidates any selection.
+                        this.selectedFiles = []
                         data.parent_folders = data.parent_folders?.map((i: any) => ({ uid: genUID(), name: i })) ?? []
                         data.folders = Array.isArray(data.folders)
                             ? data.folders.map((i: any) => ({ uid: genUID(), name: i }))

@@ -1,5 +1,8 @@
 //! Shared measurement protocol for native libc comparisons. One case per process.
-use std::{hint::black_box, mem::MaybeUninit, time::Instant};
+use std::{hint::black_box, time::Instant};
+
+#[cfg(unix)]
+use std::mem::MaybeUninit;
 
 use anyhow::{Result, ensure};
 use clap::Parser;

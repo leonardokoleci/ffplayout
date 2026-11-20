@@ -2,7 +2,7 @@ use std::{
     collections::HashSet,
     ffi::OsStr,
     fmt,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex, PoisonError},
 };
 
@@ -15,7 +15,7 @@ use sysinfo::{
     Disk, Disks, Networks, Process, ProcessRefreshKind, ProcessesToUpdate, System, get_current_pid,
 };
 
-use crate::utils::{config::PlayoutConfig, sizeof_fmt};
+use crate::utils::sizeof_fmt;
 
 const IGNORE_INTERFACES: [&str; 7] = ["docker", "lxdbr", "tab", "tun", "virbr", "veth", "vnet"];
 
@@ -147,11 +147,12 @@ impl SystemStat {
         .unwrap_or_else(|_| (0, String::from("0.0")))
     }
 
-    pub async fn stat(&self, config: &PlayoutConfig) -> Self {
+    pub async fn stat(&self) -> Self {
         let info_disks = Arc::clone(&self.info_disks);
         let info_net = Arc::clone(&self.info_net);
         let info_sys = Arc::clone(&self.info_sys);
-        let storage_path = config.channel.storage.clone();
+        // Report the disk the application runs on; media can live anywhere.
+        let storage_path = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let system = self.system.clone();
 
         let Ok((cpu, load, memory, network, storage, swap)) =

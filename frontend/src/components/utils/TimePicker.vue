@@ -7,6 +7,10 @@ const props = defineProps({
         type: Number,
         required: true,
     },
+    disabled: {
+        type: Boolean,
+        default: false,
+    },
 })
 
 const timeInput = ref()
@@ -90,9 +94,10 @@ function countDown() {
             <input
                 ref="timeInput"
                 :value="secToTime(props.modelValue)"
+                :disabled="props.disabled"
                 type="text"
                 pattern="([01]?[0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\.[0-9]{1,3})?"
-                class="w-full px-1 py-0"
+                class="w-full px-1 py-0 disabled:text-base-content/60"
                 @click="setCursorPos"
                 @change="$emit('update:modelValue', timeToSec($event))"
             />

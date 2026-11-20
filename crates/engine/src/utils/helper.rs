@@ -51,6 +51,25 @@ pub(crate) fn network_output_options(
     options
 }
 
+/// Defaults UDP outputs to the broadcast-standard 1316-byte packet size
+/// (seven TS packets) unless the configuration already sets one. Without it
+/// ffmpeg emits whole access units as single datagrams; keyframe bursts
+/// overflow receiver socket buffers and get dropped entirely, so players
+/// decode small packets (clock and audio keep running) but never receive the
+/// keyframe they need to start showing picture.
+fn resolved_output_options(
+    path: &str,
+    protocol_options: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let mut resolved = protocol_options.clone();
+
+    if path.starts_with("udp://") && !resolved.contains_key("pkt_size") {
+        resolved.insert("pkt_size".to_string(), "1316".to_string());
+    }
+
+    resolved
+}
+
 /// Opens AVIO separately so unused user options are checked and every failure
 /// frees both the output context and any opened connection.
 pub(crate) fn open_network_output(
@@ -58,10 +77,11 @@ pub(crate) fn open_network_output(
     muxer: Option<&str>,
     options: &BTreeMap<String, String>,
 ) -> anyhow::Result<format::context::Output> {
+    let resolved_options = resolved_output_options(path, options);
     let path = CString::new(path)?;
     let muxer = muxer.map(CString::new).transpose()?;
     // Defence in depth for callers bypassing configuration validation.
-    for (key, value) in options {
+    for (key, value) in &resolved_options {
         CString::new(key.as_str())?;
         CString::new(value.as_str())?;
     }
@@ -83,7 +103,7 @@ pub(crate) fn open_network_output(
         // From this point the RAII wrapper closes pb and frees the context,
         // including on an avio_open2 failure or unused-option error.
         let output = format::context::Output::wrap(context);
-        let mut dictionary = network_output_options(options).disown();
+        let mut dictionary = network_output_options(&resolved_options).disown();
         let result = ffi::avio_open2(
             &mut (*context).pb,
             path.as_ptr(),
@@ -152,7 +172,7 @@ mod tests {
 
     use super::{
         is_live_input, is_network_url, network_input_options, network_output_options,
-        open_media_input,
+        open_media_input, resolved_output_options,
     };
 
     #[test]
@@ -468,6 +488,24 @@ mod tests {
 
         assert_eq!(options.get("latency"), Some("2000000"));
         assert_eq!(options.get("rw_timeout"), Some("10000000"));
+    }
+
+    #[test]
+    fn udp_outputs_default_to_mtu_sized_packets() {
+        let resolved = super::resolved_output_options("udp://127.0.0.1:5000", &BTreeMap::new());
+
+        assert_eq!(resolved.get("pkt_size").map(String::as_str), Some("1316"));
+
+        let custom = resolved_output_options(
+            "udp://239.0.0.1:1234",
+            &BTreeMap::from([("pkt_size".to_string(), "188".to_string())]),
+        );
+
+        assert_eq!(custom.get("pkt_size").map(String::as_str), Some("188"));
+
+        let other = resolved_output_options("rtmp://127.0.0.1/live/stream", &BTreeMap::new());
+
+        assert!(!other.contains_key("pkt_size"));
     }
 
     #[test]

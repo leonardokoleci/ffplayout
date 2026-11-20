@@ -716,7 +716,6 @@ async fn unwritable_channel_and_recording_paths_are_rejected_before_database_cha
     changed.name = "must not persist".into();
     changed.public = root.join("new-public").to_string_lossy().into_owned();
     changed.playlists = blocker.to_string_lossy().into_owned();
-    changed.storage = root.join("new-storage").to_string_lossy().into_owned();
 
     let response = fixture
         .app
@@ -746,7 +745,6 @@ async fn unwritable_channel_and_recording_paths_are_rejected_before_database_cha
         serde_json::to_value(after).unwrap()
     );
     assert!(!root.join("new-public").exists());
-    assert!(!root.join("new-storage").exists());
 
     let manager = fixture.state.controller.read().await.get(1).unwrap();
     let mut config = manager.config.read().await.clone();

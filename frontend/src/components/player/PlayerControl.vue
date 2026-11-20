@@ -12,6 +12,7 @@ import { storeToRefs } from 'pinia'
 import { useEventSource, useElementSize } from '@vueuse/core'
 
 import { authFetch } from '@/composables/authFetch'
+import { previewLog } from '@/composables/previewDebug'
 import { stringFormatter } from '@/composables/helper'
 import { useLivePlaylistSchedule } from '@/composables/useLivePlaylistSchedule'
 import { playoutDisplay } from '@/composables/livePlaylistSchedule'
@@ -19,6 +20,7 @@ import { useAuth } from '@/stores/auth'
 import { useIndex } from '@/stores/index'
 import { useConfig } from '@/stores/config'
 import { usePlaylist } from '@/stores/playlist'
+import { useRundown } from '@/stores/rundown'
 
 import 'dayjs/locale/de'
 import 'dayjs/locale/en'
@@ -39,6 +41,7 @@ const authStore = useAuth()
 const configStore = useConfig()
 const indexStore = useIndex()
 const playlistStore = usePlaylist()
+const rundownStore = useRundown()
 const { filename, secToHMS } = stringFormatter()
 const { i } = storeToRefs(useConfig())
 
@@ -113,13 +116,67 @@ async function selectLiveInput(input: (typeof liveInputs.value)[number]) {
         liveRequestPending.value = false
     }
 }
-const useMoqPreview = computed(() =>
+const moqPreviewConfigured = computed(() =>
     [configStore.playoutSaved.output, ...(configStore.playoutSaved.outputs ?? [])].some(
         (output) => output?.enabled && output.mode === 'moq',
     ),
 )
+const moqPreviewFailed = ref(false)
+const useMoqPreview = computed(() => moqPreviewConfigured.value && !moqPreviewFailed.value)
+watch(
+    useMoqPreview,
+    (moq) =>
+        previewLog('preview-mode', {
+            mode: moq ? 'moq' : 'hls',
+            configured: moqPreviewConfigured.value,
+            failed: moqPreviewFailed.value,
+        }),
+    { immediate: true },
+)
+watch(moqPreviewConfigured, (moq) => {
+    if (!moq) moqPreviewFailed.value = false
+})
+
+function onMoqUnavailable(reason: string) {
+    if (!moqPreviewConfigured.value || moqPreviewFailed.value) return
+    moqPreviewFailed.value = true
+    previewLog('moq-unavailable', { reason })
+}
+
+const statusTimer = setInterval(() => {
+    previewLog('status', {
+        running: playlistStore.playoutIsRunning,
+        elapsed: playlistStore.elapsedSec,
+        index: playlistStore.currentIndex,
+        source: playlistStore.current.source,
+        title: playlistStore.current.title ?? null,
+    })
+}, 1000)
+onBeforeUnmount(() => clearInterval(statusTimer))
+
 const timeDiv = useTemplateRef('timeDiv')
 const { width } = useElementSize(timeDiv)
+
+watch(
+    () => [playlistStore.elapsedSec, playlistStore.playoutIsRunning] as const,
+    ([elapsed, running], [previousElapsed, previousRunning]) => {
+        if (!running) return
+
+        const started = !previousRunning
+        const restarted = previousElapsed > 1 && elapsed < previousElapsed - 1
+        if (!started && !restarted) return
+
+        previewLog('clip-change', {
+            started,
+            restarted,
+            elapsed,
+            previousElapsed,
+            index: playlistStore.currentIndex,
+            source: playlistStore.current.source,
+            title: playlistStore.current.title ?? null,
+        })
+    },
+)
 
 const streamUrl = ref(`/data/event/${configStore.channels[configStore.i]?.id}?endpoint=playout&uuid=${authStore.uuid}`)
 
@@ -251,6 +308,10 @@ watch([data], () => {
             } else {
                 playlistStore.setStatus(playout_status)
                 updateControlsForStatus(true)
+
+                if (playout_status.rundown_revision !== undefined) {
+                    rundownStore.onStatus(playout_status.rundown_revision, playout_status.rundown_head)
+                }
             }
             ingestStatusReceived.value = true
         } catch {
@@ -265,6 +326,7 @@ watch([data], () => {
 watch([i], () => {
     controlsUnlocked.value = false
     lastReportedRunning.value = null
+    moqPreviewFailed.value = false
     resetStatus()
     volumeLevel.value = configStore.playout.audio?.volume ?? 1
 
@@ -456,6 +518,7 @@ function runControl(button: PlayerControlButton) {
                             v-if="useMoqPreview"
                             audio-meter
                             @audio-level="moqAudioLevel = $event"
+                            @unavailable="onMoqUnavailable"
                             :key="configStore.channels[configStore.i]?.id"
                             :channel="configStore.channels[configStore.i]?.id"
                         />

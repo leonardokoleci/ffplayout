@@ -32,6 +32,8 @@ dayjs.extend(utc)
 import PlayerControl from '@/components/player/PlayerControl.vue'
 import MediaBrowser from '@/components/MediaBrowser.vue'
 import PlaylistTable from '@/components/player/PlaylistTable.vue'
+import RundownTable from '@/components/player/RundownTable.vue'
+import TrimPreview from '@/components/player/TrimPreview.vue'
 import PlaylistGraphicsEditor from '@/components/graphics/PlaylistGraphicsEditor.vue'
 import GenericModal from '@/components/utils/GenericModal.vue'
 import FileBrowserModal from '@/components/utils/FileBrowserModal.vue'
@@ -49,10 +51,11 @@ import { useIndex } from '@/stores/index'
 import { useConfig } from '@/stores/config'
 import { useMedia } from '@/stores/media'
 import { usePlaylist } from '@/stores/playlist'
+import { useRundown } from '@/stores/rundown'
 
 const { locale, t } = useI18n()
 const { width } = useWindowSize({ initialWidth: 800 })
-const { mediaType } = stringFormatter()
+const { mediaType, filename } = stringFormatter()
 const { processPlaylist, genUID } = playlistOperations()
 
 const authStore = useAuth()
@@ -60,6 +63,7 @@ const configStore = useConfig()
 const indexStore = useIndex()
 const mediaStore = useMedia()
 const playlistStore = usePlaylist()
+const rundownStore = useRundown()
 
 const { listDate, firstLoad } = storeToRefs(usePlaylist())
 
@@ -67,6 +71,7 @@ const beforeDayStart = ref(false)
 const targetDate = ref(dayjs().tz(configStore.timezone).format('YYYY-MM-DD'))
 const playlistTable = ref()
 const editId = ref(-1)
+const rundownEditId = ref(-1)
 const textFile = ref()
 const lang = ref()
 
@@ -99,6 +104,7 @@ const newSource = ref({
 const sourceBrowserField = ref<'source' | 'audio'>()
 const inspectingSource = ref(false)
 const graphicsValid = ref(true)
+const trimValid = ref(true)
 const hasGraphics = computed(
     () =>
         newSource.value.graphics != null &&
@@ -128,19 +134,33 @@ async function selectSourcePath(path: string) {
     const controller = new AbortController()
     sourceInspection = controller
     inspectingSource.value = true
-    const channel = configStore.channels[configStore.i]?.id
     try {
-        const info = await authFetch<{ duration: number }>(`/api/file/${channel}/media-info`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ source: path }),
-            signal: controller.signal,
-        })
-        if (controller.signal.aborted) return
-        newSource.value.source = path
-        newSource.value.duration = info.duration
-        newSource.value.out = info.duration
-        newSource.value.in = 0
+        if (configStore.playout.processing.mode === 'rundown') {
+            // Validate trims against the probed media and adopt the clamped values.
+            const trim = await rundownStore.probeSource({
+                source: path,
+                seek: newSource.value.in > 0 ? newSource.value.in : 0,
+                out: newSource.value.out > 0 ? newSource.value.out : undefined,
+            })
+            if (controller.signal.aborted) return
+            newSource.value.source = path
+            newSource.value.in = trim.seek
+            newSource.value.out = trim.out
+            newSource.value.duration = trim.duration
+        } else {
+            const channel = configStore.channels[configStore.i]?.id
+            const info = await authFetch<{ duration: number }>(`/api/file/${channel}/media-info`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ source: path }),
+                signal: controller.signal,
+            })
+            if (controller.signal.aborted) return
+            newSource.value.source = path
+            newSource.value.duration = info.duration
+            newSource.value.out = info.duration
+            newSource.value.in = 0
+        }
         splitCount.value = 0
         splitTimes.value = []
     } catch (reason) {
@@ -226,13 +246,11 @@ function closePlayer() {
 }
 
 function previewBrowserFile(name: string) {
-    return setPreviewData(
-        storagePreviewPath(name, configStore.channels[configStore.i]?.storage ?? '', mediaStore.folderTree.source),
-    )
+    return setPreviewData(storagePreviewPath(name, mediaStore.folderTree.source))
 }
 
 async function setPreviewData(path: string) {
-    const fullPath = storagePreviewPath(path, configStore.channels[configStore.i]?.storage ?? '')
+    const fullPath = storagePreviewPath(path)
 
     previewName.value = fullPath.split('/').slice(-1)[0] ?? ''
     showPreviewModal.value = true
@@ -302,10 +320,14 @@ function splitSource(pos: number) {
 
 function processSource(process: boolean) {
     if (process && inspectingSource.value) return
-    if (process && (!graphicsValid.value || (splitCount.value > 0 && hasGraphics.value))) {
+    if (process && (!graphicsValid.value || !trimValid.value || (splitCount.value > 0 && hasGraphics.value))) {
         indexStore.msgAlert(
             'error',
-            t(!graphicsValid.value ? 'graphicsEditor.fixErrors' : 'graphicsEditor.splitHelp'),
+            t(
+                !graphicsValid.value || !trimValid.value
+                    ? 'graphicsEditor.fixErrors'
+                    : 'graphicsEditor.splitHelp',
+            ),
             4,
         )
         return
@@ -313,7 +335,30 @@ function processSource(process: boolean) {
     cancelSourceInspection()
     showSourceModal.value = false
 
-    if (process) {
+    if (process && configStore.playout.processing.mode === 'rundown') {
+        const payload = {
+            source: newSource.value.source,
+            seek: newSource.value.in,
+            out: newSource.value.out,
+            title: newSource.value.title || undefined,
+            ad: Boolean(newSource.value.ad),
+            audio: newSource.value.audio,
+        }
+
+        const request =
+            rundownEditId.value === -1
+                ? rundownStore.addItem({ ...payload, after_position: null })
+                : rundownStore.editItem(rundownEditId.value, payload)
+
+        request
+            .then(() => {
+                indexStore.msgAlert('success', t('player.rundownUpdated'), 2)
+            })
+            .catch((error: any) => {
+                indexStore.msgAlert('error', error?.data ?? (error instanceof Error ? error.message : String(error)), 4)
+                rundownStore.fetchQueue()
+            })
+    } else if (process) {
         if (splitCount.value > 0) {
             splitSource(editId.value)
         } else if (editId.value === -1) {
@@ -326,7 +371,9 @@ function processSource(process: boolean) {
     }
 
     editId.value = -1
+    rundownEditId.value = -1
     graphicsValid.value = true
+    trimValid.value = true
     newSource.value = {
         begin: 0,
         title: '',
@@ -350,6 +397,17 @@ function editPlaylistItem(i: number) {
     // Keep optional/future fields and isolate dialog edits until confirmation.
     newSource.value = cloneDeep(item)
     graphicsValid.value = true
+    trimValid.value = true
+    showSourceModal.value = true
+}
+
+function editRundownItem(id: number) {
+    const item = rundownStore.items.find((entry) => entry.id === id)
+    if (!item) return
+    rundownEditId.value = id
+    newSource.value = cloneDeep({ ...item, uid: String(item.id), begin: 0 }) as PlaylistItem
+    graphicsValid.value = true
+    trimValid.value = true
     showSourceModal.value = true
 }
 
@@ -382,11 +440,52 @@ function onFileChange(evt: any) {
     textFile.value = files
 }
 
+// Rundown import: the file is forwarded as-is — playlist JSON (engine
+// format or bare array) or M3U/M3U8 text. The server detects the format,
+// probes the sources and replaces the whole queue.
+async function importToRundown(file: File) {
+    rundownStore.isLoading = true
+
+    try {
+        const text = await file.text()
+        const isJson = ['{', '['].includes(text.trimStart().charAt(0))
+        const channel = configStore.channels[configStore.i]?.id
+
+        await authFetch(`/api/rundown/${channel}/queue`, {
+            method: 'POST',
+            headers: isJson
+                ? { ...configStore.contentType, ...authStore.authHeader }
+                : { 'Content-Type': 'text/plain', ...authStore.authHeader },
+            body: text,
+        })
+
+        await rundownStore.fetchQueue()
+        indexStore.msgAlert('success', t('player.rundownUpdated'), 2)
+    } catch (error) {
+        indexStore.msgAlert(
+            'error',
+            error instanceof Error ? error.message : String(error),
+            4,
+        )
+        await rundownStore.fetchQueue()
+    } finally {
+        rundownStore.isLoading = false
+    }
+}
+
 async function importPlaylist(imp: boolean) {
     showImportModal.value = false
 
     if (imp) {
         if (!textFile.value || !textFile.value[0]) {
+            return
+        }
+
+        if (configStore.playout.processing.mode === 'rundown') {
+            await importToRundown(textFile.value[0])
+
+            textFile.value = null
+
             return
         }
 
@@ -415,6 +514,69 @@ async function importPlaylist(imp: boolean) {
 
     playlistStore.isLoading = false
     textFile.value = null
+}
+
+// Export the rundown queue as a day-agnostic playlist file: the queue is
+// continuous and not bound to a calendar day. M3U keeps the file usable in
+// any player, JSON mirrors the engine playlist format. Trimmed in/out
+// points round-trip through the `#EXTFFP` comment tag, which other players
+// ignore.
+function rundownExportItems() {
+    return rundownStore.items.map((item) => ({
+        source: item.source,
+        in: item.in,
+        out: item.out,
+        duration: item.duration,
+        title: item.title ?? '',
+        ad: item.ad,
+        audio: item.audio,
+        custom_filter: item.custom_filter,
+    }))
+}
+
+function downloadTextFile(content: string, fileExtension: string, mediaType: string) {
+    const blob = new Blob([content], { type: mediaType })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+
+    link.href = url
+    link.download = `rundown_${dayjs().tz(configStore.timezone).format('YYYY-MM-DD_HH-mm')}.${fileExtension}`
+    link.click()
+    URL.revokeObjectURL(url)
+}
+
+function downloadRundownPlaylist(format: 'm3u' | 'json') {
+    if (rundownStore.items.length === 0) {
+        return
+    }
+
+    const items = rundownExportItems()
+
+    if (format === 'json') {
+        downloadTextFile(JSON.stringify({ program: items }, null, 2), 'json', 'application/json')
+
+        return
+    }
+
+    const lines = ['#EXTM3U']
+
+    // Floor to milliseconds: rounding up could push values past the real
+    // media duration and make the file fail validation on re-import.
+    const trim = (value: number) => Math.floor(Math.max(0, value) * 1000) / 1000
+
+    for (const item of items) {
+        const title = (item.title || filename(item.source)).replace(/[\r\n]+/g, ' ')
+
+        lines.push(`#EXTINF:${trim(item.out - item.in).toFixed(3)},${title}`)
+
+        if (item.in > 0 || (item.duration > 0 && item.out < item.duration)) {
+            lines.push(`#EXTFFP:${trim(item.in).toFixed(3)},${trim(item.out).toFixed(3)}`)
+        }
+
+        lines.push(item.source)
+    }
+
+    downloadTextFile(`${lines.join('\n')}\n`, 'm3u', 'audio/x-mpegurl')
 }
 
 async function savePlaylist(save: boolean) {
@@ -464,9 +626,9 @@ async function deletePlaylist(del: boolean) {
 }
 </script>
 <template>
-    <div class="h-full">
+    <div class="flex flex-col h-[calc(100vh-52px)]">
         <PlayerControl />
-        <div class="flex justify-end p-1">
+        <div class="flex justify-end p-1 shrink-0">
             <div class="h-8 flex">
                 <div class="text-warning flex-none flex justify-end p-2">
                     <div
@@ -478,7 +640,10 @@ async function deletePlaylist(del: boolean) {
                     </div>
                 </div>
                 <VueDatePicker
-                    v-if="!configStore.playout.playlist.infinit && configStore.playout.processing.mode !== 'folder'"
+                    v-if="
+                        !configStore.playout.playlist.infinit &&
+                        !['folder', 'rundown'].includes(configStore.playout.processing.mode)
+                    "
                     v-model="listDate"
                     :hide-navigation="['time']"
                     :action-row="{ showCancel: false, showSelect: false, showPreview: false }"
@@ -495,9 +660,9 @@ async function deletePlaylist(del: boolean) {
                 />
             </div>
         </div>
-        <div class="p-1 min-h-65 h-[calc(100vh-800px)] xl:h-[calc(100vh-480px)]">
+        <div class="p-1 min-h-65 flex-1">
             <Splitpanes
-                v-if="configStore.playout.processing.mode === 'playlist'"
+                v-if="['playlist', 'rundown'].includes(configStore.playout.processing.mode)"
                 class="border border-base-content/30 rounded-sm shadow"
             >
                 <Pane
@@ -509,13 +674,52 @@ async function deletePlaylist(del: boolean) {
                 >
                     <MediaBrowser :preview="previewBrowserFile" />
                 </Pane>
-                <pane>
+                <pane v-if="configStore.playout.processing.mode === 'playlist'">
                     <PlaylistTable ref="playlistTable" :edit-item="editPlaylistItem" :preview="setPreviewData" />
+                </pane>
+                <pane v-else>
+                    <RundownTable :edit-item="editRundownItem" :preview="setPreviewData" />
                 </pane>
             </Splitpanes>
             <div v-else class="h-full border border-b-2 border-base-content/30 rounded-sm shadow">
                 <MediaBrowser :preview="previewBrowserFile" />
             </div>
+        </div>
+
+        <div v-if="configStore.playout.processing.mode === 'rundown'" class="h-16 join flex justify-end p-3">
+            <div class="dropdown dropdown-top dropdown-end">
+                <button tabindex="0" class="btn btn-sm btn-primary join-item" :title="t('player.save')">
+                    <i class="bi-download" />
+                </button>
+                <ul
+                    tabindex="0"
+                    class="dropdown-content menu z-10 w-36 bg-base-100 rounded-box border border-base-content/20 p-2 shadow"
+                >
+                    <li>
+                        <button @click="downloadRundownPlaylist('m3u')">M3U</button>
+                    </li>
+                    <li>
+                        <button @click="downloadRundownPlaylist('json')">JSON</button>
+                    </li>
+                </ul>
+            </div>
+            <button
+                class="btn btn-sm btn-primary join-item"
+                :title="t('player.import')"
+                @click="showImportModal = true"
+            >
+                <i class="bi-file-text" />
+            </button>
+            <button
+                class="btn btn-sm btn-primary join-item"
+                :title="t('player.remote')"
+                @click="showSourceModal = true"
+            >
+                <i class="bi-file-earmark-plus" />
+            </button>
+            <button class="btn btn-sm btn-primary join-item" :title="t('player.reset')" @click="rundownStore.fetchQueue()">
+                <i class="bi-arrow-counterclockwise" />
+            </button>
         </div>
 
         <div v-if="configStore.playout.processing.mode === 'playlist'" class="h-16 join flex justify-end p-3">
@@ -608,103 +812,126 @@ async function deletePlaylist(del: boolean) {
             :show="showSourceModal"
             :title="t('player.addEdit')"
             :modal-action="processSource"
-            :confirm-disabled="inspectingSource || !graphicsValid || (splitCount > 0 && hasGraphics)"
+            :confirm-disabled="inspectingSource || !graphicsValid || !trimValid || (splitCount > 0 && hasGraphics)"
         >
-            <div class="w-full md:w-[min(56rem,80vw)]">
+            <div class="w-full md:w-[min(72rem,90vw)]">
                 <div v-if="inspectingSource" role="status" class="flex justify-center py-2">
                     <span class="loading loading-spinner loading-sm" :aria-label="t('fileBrowser.loading')" />
                 </div>
-                <fieldset :disabled="inspectingSource" class="grid gap-5 md:grid-cols-2">
-                    <div>
-                        <fieldset class="fieldset">
-                            <legend class="fieldset-legend">{{ t('player.title') }}</legend>
-                            <input v-model="newSource.title" type="text" name="source" class="input input-sm w-full" />
-                        </fieldset>
+                <fieldset :disabled="inspectingSource" class="space-y-4">
+                    <!-- ── Trim Preview: full-width hero at the top ── -->
+                    <TrimPreview
+                        v-if="newSource.source"
+                        v-model:in="newSource.in"
+                        v-model:out="newSource.out"
+                        :src="newSource.source"
+                        :duration="newSource.duration"
+                        @validity="trimValid = $event"
+                    />
+
+                    <!-- ── Compact metadata fields below ── -->
+                    <div class="grid gap-4 md:grid-cols-2">
+                        <div class="space-y-2">
+                            <fieldset class="fieldset">
+                                <legend class="fieldset-legend">{{ t('player.file') }}</legend>
+                                <div class="join w-full">
+                                    <input
+                                        v-model="newSource.source"
+                                        type="text"
+                                        name="source"
+                                        class="input input-sm join-item w-full min-w-0"
+                                    />
+                                    <button
+                                        type="button"
+                                        class="btn btn-sm join-item"
+                                        :title="t('fileBrowser.title')"
+                                        :aria-label="t('fileBrowser.title')"
+                                        @click="sourceBrowserField = 'source'"
+                                    >
+                                        <i class="bi-folder2-open" />
+                                    </button>
+                                </div>
+                            </fieldset>
+                            <fieldset class="fieldset">
+                                <legend class="fieldset-legend">{{ t('player.title') }}</legend>
+                                <input v-model="newSource.title" type="text" name="source" class="input input-sm w-full" />
+                            </fieldset>
+                            <fieldset class="fieldset">
+                                <legend class="fieldset-legend">{{ t('player.audio') }}</legend>
+                                <div class="join w-full">
+                                    <input
+                                        v-model="newSource.audio"
+                                        type="text"
+                                        name="audio"
+                                        class="input input-sm join-item w-full min-w-0"
+                                        :placeholder="t('player.audioSourcePlaceholder')"
+                                    />
+                                    <button
+                                        type="button"
+                                        class="btn btn-sm join-item"
+                                        :title="t('fileBrowser.title')"
+                                        :aria-label="t('fileBrowser.title')"
+                                        @click="sourceBrowserField = 'audio'"
+                                    >
+                                        <i class="bi-folder2-open" />
+                                    </button>
+                                </div>
+                            </fieldset>
+                        </div>
+                        <div class="space-y-2">
+                            <div class="grid grid-cols-3 gap-2">
                         <fieldset class="fieldset">
                             <legend class="fieldset-legend">{{ t('player.duration') }}</legend>
-                            <TimePicker v-model="newSource.duration" />
-                        </fieldset>
-                        <fieldset class="fieldset">
-                            <legend class="fieldset-legend">{{ t('player.in') }}</legend>
-                            <TimePicker v-model="newSource.in" />
-                        </fieldset>
-                        <fieldset class="fieldset">
-                            <legend class="fieldset-legend">{{ t('player.out') }}</legend>
-                            <TimePicker v-model="newSource.out" />
-                        </fieldset>
-                        <fieldset class="fieldset">
-                            <legend class="fieldset-legend">{{ t('player.file') }}</legend>
-                            <div class="join w-full">
-                                <input
-                                    v-model="newSource.source"
-                                    type="text"
-                                    name="source"
-                                    class="input input-sm join-item w-full min-w-0"
-                                />
-                                <button
-                                    type="button"
-                                    class="btn btn-sm join-item"
-                                    :title="t('fileBrowser.title')"
-                                    :aria-label="t('fileBrowser.title')"
-                                    @click="sourceBrowserField = 'source'"
-                                >
-                                    <i class="bi-folder2-open" />
-                                </button>
-                            </div>
-                        </fieldset>
-                        <fieldset class="fieldset">
-                            <legend class="fieldset-legend">{{ t('player.audio') }}</legend>
-                            <div class="join w-full">
-                                <input
-                                    v-model="newSource.audio"
-                                    type="text"
-                                    name="audio"
-                                    class="input input-sm join-item w-full min-w-0"
-                                    :placeholder="t('player.audioSourcePlaceholder')"
-                                />
-                                <button
-                                    type="button"
-                                    class="btn btn-sm join-item"
-                                    :title="t('fileBrowser.title')"
-                                    :aria-label="t('fileBrowser.title')"
-                                    @click="sourceBrowserField = 'audio'"
-                                >
-                                    <i class="bi-folder2-open" />
-                                </button>
-                            </div>
-                        </fieldset>
-                        <fieldset class="fieldset mt-2 rounded-box w-full">
-                            <label class="fieldset-label text-base-content">
-                                <input v-model="newSource.ad" type="checkbox" class="checkbox" />
-                                {{ t('player.ad') }}
-                            </label>
-                        </fieldset>
-
-                        <hr class="h-px my-2 bg-base-content/20 border-0" />
-
-                        <h4 class="font-bold">{{ t('player.splitVideo') }}</h4>
-
-                        <fieldset class="fieldset">
-                            <legend class="fieldset-legend">{{ t('player.cuts') }}</legend>
-                            <input
-                                v-model="splitCount"
-                                :disabled="hasGraphics"
-                                type="number"
-                                min="0"
-                                step="1"
-                                class="input input-sm w-full"
-                                @change="splitClip"
+                            <!-- In rundown mode the duration comes from the probed
+                                 media; it is shown read-only to avoid drift. -->
+                            <TimePicker
+                                v-model="newSource.duration"
+                                :disabled="configStore.playout.processing.mode === 'rundown'"
                             />
                         </fieldset>
+                                <fieldset class="fieldset">
+                                    <legend class="fieldset-legend">{{ t('player.in') }}</legend>
+                                    <TimePicker v-model="newSource.in" />
+                                </fieldset>
+                                <fieldset class="fieldset">
+                                    <legend class="fieldset-legend">{{ t('player.out') }}</legend>
+                                    <TimePicker v-model="newSource.out" />
+                                </fieldset>
+                            </div>
+                            <fieldset class="fieldset rounded-box w-full">
+                                <label class="fieldset-label text-base-content">
+                                    <input v-model="newSource.ad" type="checkbox" class="checkbox" />
+                                    {{ t('player.ad') }}
+                                </label>
+                            </fieldset>
 
-                        <p v-if="hasGraphics" class="text-sm text-base-content/70">
-                            {{ t('graphicsEditor.splitHelp') }}
-                        </p>
-                        <div v-for="time in splitTimes" :key="time.id" class="form-control mt-2">
-                            <TimePicker v-model="time.val" />
+                            <template v-if="configStore.playout.processing.mode !== 'rundown'">
+                                <hr class="h-px my-1 bg-base-content/20 border-0" />
+                                <h4 class="font-bold">{{ t('player.splitVideo') }}</h4>
+                                <fieldset class="fieldset">
+                                    <legend class="fieldset-legend">{{ t('player.cuts') }}</legend>
+                                    <input
+                                        v-model="splitCount"
+                                        :disabled="hasGraphics"
+                                        type="number"
+                                        min="0"
+                                        step="1"
+                                        class="input input-sm w-full"
+                                        @change="splitClip"
+                                    />
+                                </fieldset>
+                                <p v-if="hasGraphics" class="text-sm text-base-content/70">
+                                    {{ t('graphicsEditor.splitHelp') }}
+                                </p>
+                                <div v-for="time in splitTimes" :key="time.id" class="form-control mt-2">
+                                    <TimePicker v-model="time.val" />
+                                </div>
+                            </template>
                         </div>
                     </div>
-                    <fieldset :disabled="splitCount > 0" class="min-w-0">
+
+                    <!-- ── Graphics editor (playlist mode only) ── -->
+                    <fieldset v-if="configStore.playout.processing.mode !== 'rundown'" :disabled="splitCount > 0" class="min-w-0">
                         <p v-if="splitCount > 0" class="text-sm text-base-content/70">
                             {{ t('graphicsEditor.splitHelp') }}
                         </p>

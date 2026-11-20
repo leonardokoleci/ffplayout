@@ -1,25 +1,25 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 // @ts-ignore
 import { Splitpanes, Pane } from 'splitpanes'
 
 import { computed, ref, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { storeToRefs } from 'pinia'
 import { useWindowSize } from '@vueuse/core'
 import { useHead } from '@unhead/vue'
 
 import { useAuth } from '@/stores/auth'
 import { useIndex } from '@/stores/index'
 import { useConfig } from '@/stores/config'
-import { useMedia } from '@/stores/media'
+import { joinBrowsePath, parentBrowsePath, useMedia } from '@/stores/media'
 
 import GenericModal from '@/components/utils/GenericModal.vue'
 import VideoPlayer from '@/components/utils/VideoPlayer.vue'
-import MediaTree from '@/components/media/MediaTree.vue'
+import MediaQuickAccess from '@/components/media/MediaQuickAccess.vue'
 
 import { authFetch } from '@/composables/authFetch'
 import { stringFormatter } from '@/composables/helper'
 import { createFilePreviewUrl } from '@/composables/fileAccess'
+import { multiDragGhost } from '@/composables/multiDragGhost'
 import { useFileUpload } from '@/composables/useFileUpload'
 
 const { t } = useI18n()
@@ -28,8 +28,7 @@ const authStore = useAuth()
 const configStore = useConfig()
 const indexStore = useIndex()
 const mediaStore = useMedia()
-const { toMin, mediaType, parent, dir_file } = stringFormatter()
-const { i } = storeToRefs(useConfig())
+const { toMin, mediaType, dir_file } = stringFormatter()
 const {
     uploadTask,
     currentNumber,
@@ -78,10 +77,6 @@ onMounted(async () => {
     })
 
     extensions.value = extensionsArr.value.join(', ')
-
-    if (!mediaStore.folderTree.parent || !mediaStore.currentPath) {
-        await mediaStore.getTree('')
-    }
 })
 
 useHead({
@@ -96,11 +91,53 @@ watch([width], () => {
     }
 })
 
-watch([i], () => {
-    mediaStore.getTree('')
-})
+// Anchors the shift-range selection to the last row clicked without modifiers.
+let selectionAnchor = ''
+let dragSelection: any[] = []
+
+function selectFiles(element: any, event: MouseEvent) {
+    // Rename/preview/delete buttons manage their own actions.
+    if ((event.target as HTMLElement).closest('button')) return
+
+    const names = mediaStore.folderTree.files.map((file: any) => file.name)
+
+    if (event.shiftKey && selectionAnchor) {
+        const from = names.indexOf(selectionAnchor)
+        const to = names.indexOf(element.name)
+
+        if (from >= 0 && to >= 0) {
+            const [start, end] = from <= to ? [from, to] : [to, from]
+            mediaStore.selectedFiles = names.slice(start, end + 1)
+        }
+
+        return
+    }
+
+    selectionAnchor = element.name
+
+    if (event.ctrlKey || event.metaKey) {
+        mediaStore.selectedFiles = mediaStore.selectedFiles.includes(element.name)
+            ? mediaStore.selectedFiles.filter((name) => name !== element.name)
+            : [...mediaStore.selectedFiles, element.name]
+    } else {
+        mediaStore.selectedFiles = [element.name]
+    }
+
+}
+
+// A drag that starts on a selected row carries the whole selection.
+function dragSelectionItems(itemData: any) {
+    const selected = mediaStore.selectedFiles
+        .map((name) => mediaStore.folderTree.files.find((file: any) => file.name === name))
+        .filter((file) => file !== undefined)
+
+    return selected.length > 1 && selected.some((file) => file.name === itemData.name) ? selected : [itemData]
+}
 
 function handleDragStart(event: any, itemData: any) {
+    dragSelection = dragSelectionItems(itemData)
+    // Only a drag that carries the whole selection gets the count badge.
+    multiDragGhost(event, dragSelection.length, t('player.selectedCount', { n: dragSelection.length }))
     event.dataTransfer.setData('application/json', JSON.stringify(itemData))
 }
 
@@ -129,9 +166,9 @@ async function handleDrop(event: any, targetFolder: any, isParent: boolean | nul
         let folderPath = targetFolder
 
         if (isParent) {
-            folderPath = `/${parent(mediaStore.folderTree.source)}/${targetFolder.name}`
+            folderPath = joinBrowsePath(parentBrowsePath(mediaStore.folderTree.source), targetFolder.name)
         } else if (isParent === false) {
-            folderPath = `/${mediaStore.folderTree.source}/${targetFolder.name}`
+            folderPath = joinBrowsePath(mediaStore.folderTree.source, targetFolder.name)
         }
 
         dropUploadFiles(event.dataTransfer.files, `${folderPath}/`.replace(/\/[/]+/g, '/'))
@@ -146,19 +183,28 @@ async function handleDrop(event: any, targetFolder: any, isParent: boolean | nul
     }
 
     const item = JSON.parse(itemData)
-    const source = `/${mediaStore.folderTree.source}/${item.name}`.replace(/\/[/]+/g, '/')
-    let target
+    const draggedItems = dragSelection.some((entry) => entry.name === item.name) ? dragSelection : [item]
+    dragSelection = []
 
-    if (isParent === null) {
-        target = `${targetFolder}/${item.name}`.replace(/\/[/]+/g, '/')
-    } else if (isParent) {
-        target = `/${parent(mediaStore.folderTree.source)}/${targetFolder.name}/${item.name}`.replace(
-            /\/[/]+/g,
-            '/',
-        )
-    } else {
-        target = `/${mediaStore.folderTree.source}/${targetFolder.name}/${item.name}`.replace(/\/[/]+/g, '/')
-    }
+    const moves = draggedItems
+        .map((dragged) => {
+            const source = joinBrowsePath(mediaStore.folderTree.source, dragged.name)
+            let target
+
+            if (isParent === null) {
+                target = joinBrowsePath(targetFolder, dragged.name)
+            } else if (isParent) {
+                target = joinBrowsePath(
+                    parentBrowsePath(mediaStore.folderTree.source),
+                    `${targetFolder.name}/${dragged.name}`,
+                )
+            } else {
+                target = joinBrowsePath(mediaStore.folderTree.source, `${targetFolder.name}/${dragged.name}`)
+            }
+
+            return { source, target }
+        })
+        .filter((move) => move.source !== move.target)
 
     event.target.style.fontWeight = null
 
@@ -167,18 +213,20 @@ async function handleDrop(event: any, targetFolder: any, isParent: boolean | nul
         event.target.firstChild.classList.add('bi-folder-fill')
     }
 
-    if (source !== target) {
-        await authFetch<void>(`/api/file/${configStore.channels[configStore.i]?.id}/rename`, {
-            method: 'POST',
-            headers: { ...configStore.contentType, ...authStore.authHeader },
-            body: JSON.stringify({ source, target }),
-        })
-            .then(() => {
-                mediaStore.getTree(mediaStore.folderTree.source)
+    for (const move of moves) {
+        try {
+            await authFetch<void>(`/api/file/${configStore.channels[configStore.i]?.id}/rename`, {
+                method: 'POST',
+                headers: { ...configStore.contentType, ...authStore.authHeader },
+                body: JSON.stringify({ source: move.source, target: move.target }),
             })
-            .catch((e) => {
-                indexStore.msgAlert('error', `${t('media.moveError')}: ${e}`, 3)
-            })
+        } catch (e) {
+            indexStore.msgAlert('error', `${t('media.moveError')}: ${e}`, 3)
+        }
+    }
+
+    if (moves.length) {
+        mediaStore.getTree(mediaStore.folderTree.source)
     }
 }
 
@@ -188,7 +236,7 @@ async function setPreviewData(path: string) {
     */
     let fullPath = path
     if (!path.includes('/')) {
-        fullPath = `/${mediaStore.folderTree.parent}/${mediaStore.folderTree.source}/${path}`.replace(/\/[/]+/g, '/')
+        fullPath = joinBrowsePath(mediaStore.folderTree.source, path)
     }
 
     previewName.value = fullPath.split('/').slice(-1)[0] || ''
@@ -289,7 +337,7 @@ async function createFolder(create: boolean) {
     showCreateModal.value = false
 
     if (create) {
-        const path = `${mediaStore.folderTree.source}/${folderName.value.name}`.replace(/\/[/]+/g, '/')
+        const path = joinBrowsePath(mediaStore.folderTree.source, folderName.value.name)
         lastPath.value = mediaStore.folderTree.source
 
         if (mediaStore.folderTree.folders.includes(folderName.value)) {
@@ -362,8 +410,6 @@ async function uploadFiles(upl: boolean) {
         if (targetPath === mediaStore.currentPath) {
             mediaStore.getTree(lastPath.value)
         }
-
-        mediaStore.treeVersion += 1
 
         setTimeout(() => {
             fileInputName.value = null
@@ -455,7 +501,7 @@ function onPaneDrop(event: DragEvent) {
                         class="h-full bg-base-300"
                         :class="horizontal ? 'rounded-t' : 'rounded-s'"
                     >
-                        <MediaTree :drop-files="dropUploadFiles" />
+                        <MediaQuickAccess :drop-files="dropUploadFiles" />
                     </Pane>
                     <Pane class="h-full bg-base-300!" :class="horizontal ? 'rounded-b' : 'rounded-e'">
                         <div
@@ -481,7 +527,7 @@ function onPaneDrop(event: DragEvent) {
                                                 class="truncate"
                                                 @click="
                                                     mediaStore.getTree(
-                                                        `/${mediaStore.folderTree.source}/${folder.name}`,
+                                                        joinBrowsePath(mediaStore.folderTree.source, folder.name),
                                                     )
                                                 "
                                             >
@@ -495,10 +541,7 @@ function onPaneDrop(event: DragEvent) {
                                                 :title="t('media.pinFolder')"
                                                 @click="
                                                     mediaStore.togglePreferredFolder(
-                                                        `/${mediaStore.folderTree.source}/${folder.name}`.replace(
-                                                            /\/[/]+/g,
-                                                            '/',
-                                                        ),
+                                                        joinBrowsePath(mediaStore.folderTree.source, folder.name),
                                                     )
                                                 "
                                             >
@@ -506,10 +549,7 @@ function onPaneDrop(event: DragEvent) {
                                                     class="bi"
                                                     :class="
                                                         mediaStore.isPreferred(
-                                                            `/${mediaStore.folderTree.source}/${folder.name}`.replace(
-                                                                /\/[/]+/g,
-                                                                '/',
-                                                            ),
+                                                            joinBrowsePath(mediaStore.folderTree.source, folder.name),
                                                         )
                                                             ? 'bi-star-fill text-warning'
                                                             : 'bi-star opacity-40 hover:opacity-100'
@@ -520,10 +560,7 @@ function onPaneDrop(event: DragEvent) {
                                                 class="opacity-30 hover:opacity-100 cursor-pointer"
                                                 @click="
                                                     setRenameValues(
-                                                        `/${mediaStore.folderTree.source}/${folder.name}`.replace(
-                                                            /\/[/]+/g,
-                                                            '/',
-                                                        ),
+                                                        joinBrowsePath(mediaStore.folderTree.source, folder.name),
                                                         true,
                                                     )
                                                 "
@@ -534,11 +571,10 @@ function onPaneDrop(event: DragEvent) {
                                                 class="opacity-30 hover:opacity-100 cursor-pointer"
                                                 @click="
                                                     ;((showDeleteModal = true),
-                                                        (deleteName =
-                                                            `/${mediaStore.folderTree.source}/${folder.name}`.replace(
-                                                                /\/[/]+/g,
-                                                                '/',
-                                                            )))
+                                                        (deleteName = joinBrowsePath(
+                                                            mediaStore.folderTree.source,
+                                                            folder.name,
+                                                        )))
                                                 "
                                             >
                                                 <i class="bi-x-circle-fill" />
@@ -549,9 +585,11 @@ function onPaneDrop(event: DragEvent) {
                                         v-for="(element, index) in mediaStore.folderTree.files"
                                         :id="`file_${index}`"
                                         :key="element.name"
-                                        class="grid grid-cols-[auto_170px] border-b border-base-content/20"
+                                        class="grid grid-cols-[auto_170px] border-b border-base-content/20 select-none cursor-default"
                                         draggable="true"
+                                        :class="{ 'bg-warning/40!': mediaStore.selectedFiles.includes(element.name) }"
                                         @dragstart="handleDragStart($event, element)"
+                                        @click="selectFiles(element, $event)"
                                     >
                                         <td class="px-2 py-1.5 truncate cursor-grab">
                                             <i
@@ -581,10 +619,7 @@ function onPaneDrop(event: DragEvent) {
                                                 class="w-7 cursor-pointer"
                                                 @click="
                                                     setRenameValues(
-                                                        `/${mediaStore.folderTree.source}/${element.name}`.replace(
-                                                            /\/[/]+/g,
-                                                            '/',
-                                                        ),
+                                                        joinBrowsePath(mediaStore.folderTree.source, element.name),
                                                         false,
                                                     )
                                                 "
@@ -596,11 +631,10 @@ function onPaneDrop(event: DragEvent) {
                                                 class="w-7 opacity-30 hover:opacity-100 cursor-pointer"
                                                 @click="
                                                     ;((showDeleteModal = true),
-                                                        (deleteName =
-                                                            `/${mediaStore.folderTree.source}/${element.name}`.replace(
-                                                                /\/[/]+/g,
-                                                                '/',
-                                                            )))
+                                                        (deleteName = joinBrowsePath(
+                                                            mediaStore.folderTree.source,
+                                                            element.name,
+                                                        )))
                                                 "
                                             >
                                                 <i class="bi-x-circle-fill" />

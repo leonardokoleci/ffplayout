@@ -41,6 +41,9 @@ export const usePlaylist = defineStore('playlist', {
         last_channel: 0,
         firstLoad: true,
         scrollToItem: false,
+        selectedUids: [] as string[],
+        clipboardItems: [] as PlaylistItem[],
+        clipboardMode: '' as '' | 'copy' | 'cut',
     }),
 
     getters: {},

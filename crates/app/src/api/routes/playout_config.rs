@@ -9,6 +9,7 @@ use axum::{
     extract::{Path as AxumPath, Query, State},
 };
 use ff_graphics::style::LogoStyle;
+use path_clean::PathClean;
 use protect_axum::authorities::AuthDetails;
 use serde::{Deserialize, Serialize};
 
@@ -21,7 +22,6 @@ use crate::{
         handles,
         models::{Output, Role},
     },
-    file::norm_abs_path,
     utils::{
         config::{OutputMode, PlayoutConfig, get_config},
         errors::ServiceError,
@@ -389,8 +389,6 @@ pub async fn update_playout_config(
         .ingest_level
         .parse::<ff_engine::LogLevel>()
         .map_err(ServiceError::BadRequest)?;
-    let p = manager.channel.lock().await.storage.clone();
-    let storage = Path::new(&p);
     let config = manager.config.read().await.clone();
     let ingest_only = query.scope == Some(ConfigUpdateScope::Ingest);
     if ingest_only {
@@ -412,7 +410,16 @@ pub async fn update_playout_config(
     if query.scope == Some(ConfigUpdateScope::GraphicsCache) {
         let mut scoped = config.clone();
         scoped.processing.graphics_cache_mib = data.processing.graphics_cache_mib;
+        scoped.processing.graphics_browser = data.processing.graphics_browser.clone();
         data = scoped;
+    }
+    if data
+        .processing
+        .graphics_browser
+        .as_ref()
+        .is_some_and(|browser| browser.trim().is_empty())
+    {
+        data.processing.graphics_browser = None;
     }
     if !(32..=1024).contains(&data.processing.graphics_cache_mib) {
         return Err(ServiceError::BadRequest(
@@ -421,7 +428,8 @@ pub async fn update_playout_config(
     }
     let config_id = config.general.id;
 
-    let (logo_path, _, logo) = norm_abs_path(storage, &data.processing.logo)?;
+    // Configured media paths are absolute; they are used exactly as given.
+    let logo_path = Path::new(&data.processing.logo).clean();
     if query.scope == Some(ConfigUpdateScope::Logo)
         && data.processing.add_logo
         && !logo_path.is_file()
@@ -453,10 +461,6 @@ pub async fn update_playout_config(
         .validate(canvas)
         .map_err(|error| ServiceError::BadRequest(format!("Invalid logo layout: {error:#}")))?;
     }
-    let (_, _, filler) = norm_abs_path(storage, &data.storage.filler)?;
-
-    data.processing.logo = logo;
-    data.storage.filler = filler;
     if let Some(preset_id) = data.text.preset_id {
         handles::select_preset(&state.pool, id, preset_id)
             .await

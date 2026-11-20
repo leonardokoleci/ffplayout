@@ -20,7 +20,7 @@ use crate::{
     },
     db::{handles, models::Role},
     file::{
-        MoveObject, PathObject, UploadStatus, UploadStatusQuery, norm_abs_path,
+        MoveObject, PathObject, UploadStatus, UploadStatusQuery, local, norm_abs_path,
         selection::{BrowseRequest, Listing, SelectionMediaInfo},
     },
     player::utils::import::import_file,
@@ -74,6 +74,25 @@ pub async fn file_browser(
         Ok(obj) => Ok(Json(obj)),
         Err(e) => Err(e),
     }
+}
+
+/// ### Browsable Drives
+///
+/// Lists the filesystem roots that can be browsed: existing drive letters on
+/// Windows, the filesystem root on Unix.
+pub async fn get_drives(
+    State(_state): State<AppState>,
+    Path(id): Path<i32>,
+    user: AuthUser,
+    details: AuthDetails<Role>,
+) -> Result<Json<Vec<String>>, ServiceError> {
+    ensure_any_authority(
+        &details,
+        &[&Role::GlobalAdmin, &Role::ChannelAdmin, &Role::User],
+    )?;
+    user.ensure_channel_or_admin(id)?;
+
+    Ok(Json(local::drives().await))
 }
 
 pub async fn browse_selection(
@@ -291,10 +310,8 @@ pub async fn create_file_access_token(
     }
     .ok_or_else(|| ServiceError::BadRequest(format!("Channel {id} not found!")))?;
 
-    let config = manager.config.read().await;
-    let storage = config.channel.storage.clone();
-    let (path, _, _) = norm_abs_path(&storage, &request.filename)?;
-    drop(config);
+    let root = manager.storage.root.read().await.clone();
+    let (path, _, _) = norm_abs_path(&root, &request.filename)?;
 
     let metadata = match fs::metadata(&path).await {
         Ok(metadata) => metadata,
@@ -343,12 +360,12 @@ pub async fn get_media_favorites(
 
 /// **Pin a media folder for Quick Access**
 ///
-/// The folder must exist inside the channel storage. Pinning is
+/// The folder must exist on any browsable disk. Pinning is
 /// per user and channel.
 ///
 /// ```BASH
 /// curl -X POST http://127.0.0.1:8787/api/file/1/favorites -H 'Content-Type: application/json'
-/// -d '{"path": "/subfolder"}' -H 'Authorization: Bearer <TOKEN>'
+/// -d '{"path": "C:/Videos"}' -H 'Authorization: Bearer <TOKEN>'
 /// ```
 pub async fn add_media_favorite(
     State(state): State<AppState>,
@@ -369,11 +386,8 @@ pub async fn add_media_favorite(
     }
     .ok_or_else(|| ServiceError::BadRequest(format!("Channel {id} not found!")))?;
 
-    let config = manager.config.read().await;
-    let storage = config.channel.storage.clone();
-    drop(config);
-
-    let (path, _, _) = norm_abs_path(&storage, &data.path)?;
+    let root = manager.storage.root.read().await.clone();
+    let (path, _, _) = norm_abs_path(&root, &data.path)?;
     let metadata = match fs::metadata(&path).await {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -435,10 +449,8 @@ pub async fn get_file(
     }
     .ok_or_else(|| ServiceError::BadRequest(format!("Channel {id} not found!")))?;
 
-    let config = manager.config.read().await;
-    let storage = config.channel.storage.clone();
-    let (path, _, _) = norm_abs_path(&storage, &filename)?;
-    drop(config);
+    let root = manager.storage.root.read().await.clone();
+    let (path, _, _) = norm_abs_path(&root, &filename)?;
 
     if let Some(token) = headers
         .get(AUTHORIZATION)

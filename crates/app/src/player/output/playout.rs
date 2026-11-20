@@ -344,9 +344,14 @@ async fn play_loop(
                     playout_rate: 1.0,
                     graphics: manager.graphics.for_clip(
                         &node,
-                        &config.storage.path,
+                        &manager.storage.root.read().await.clone(),
                         graphics_canvas,
                         id,
+                        config
+                            .processing
+                            .graphics_browser
+                            .as_ref()
+                            .map(std::path::PathBuf::from),
                     ),
                 },
             )
@@ -726,7 +731,7 @@ fn subtitle_media_path(config: &PlayoutConfig, source: &str) -> Option<String> {
     }
 
     config.processing.vtt_dummy.as_ref().and_then(|dummy| {
-        let (dummy_path, _, _) = norm_abs_path(&config.storage.path, dummy).ok()?;
+        let dummy_path = Path::new(dummy).to_path_buf();
         dummy_path
             .is_file()
             .then(|| dummy_path.to_string_lossy().to_string())

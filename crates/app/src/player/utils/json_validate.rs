@@ -284,13 +284,6 @@ pub async fn validate_playlist(
         checked += 1;
 
         if !is_remote(&item.source) {
-            for path in [&mut item.source, &mut item.audio] {
-                if !path.is_empty() && !is_remote(path) && Path::new(path).is_relative() {
-                    let new_path = config.storage.path.join(&*path);
-                    *path = new_path.to_string_lossy().to_string();
-                }
-            }
-
             reuse_playlist_probes(item, validated);
 
             if item.audio.is_empty() {

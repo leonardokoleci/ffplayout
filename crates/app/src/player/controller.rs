@@ -2,7 +2,6 @@ use std::{
     cmp,
     collections::HashMap,
     fmt,
-    path::Path,
     sync::{
         Arc, Mutex as StdMutex, PoisonError,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -179,7 +178,7 @@ impl ChannelManager {
 
         extensions.append(&mut extra_extensions);
 
-        let storage = init_storage(config.channel.storage.clone(), extensions).await?;
+        let storage = init_storage(extensions).await?;
         let audio_effects = AudioEffectsControl::new(config.audio.volume).unwrap_or_default();
         let live_loudness = ff_engine::LiveLoudnessControl::new(
             config.audio.loudness_scope != "off",
@@ -276,12 +275,10 @@ impl ChannelManager {
         channel.time_shift.clone_from(&other.time_shift);
         channel.timezone.clone_from(&other.timezone);
 
-        let channel_storage = channel.storage.clone();
-        let channel_extensions = channel.extra_extensions.clone();
+        let channel_extensions = other.extra_extensions.clone();
 
         drop(channel);
 
-        let s_path = Path::new(&channel_storage);
         let mut extensions = self.config.read().await.storage.extensions.clone();
         let mut extra_extensions = channel_extensions
             .split(',')
@@ -289,7 +286,6 @@ impl ChannelManager {
             .collect::<Vec<String>>();
 
         extensions.append(&mut extra_extensions);
-        *self.storage.root.write().await = s_path.to_path_buf();
         *self.storage.extensions.write().await = extensions;
     }
 
@@ -1138,7 +1134,7 @@ mod tests {
     #[tokio::test]
     async fn temporary_stop_cancels_and_joins_the_validator() {
         let (manager, pool) = channel_manager().await;
-        let root = manager.config.read().await.storage.path.clone();
+        let root = manager.storage.root.read().await.clone();
         let token = CancellationToken::new();
         let worker_token = token.clone();
         let (done_tx, done_rx) = tokio::sync::oneshot::channel();

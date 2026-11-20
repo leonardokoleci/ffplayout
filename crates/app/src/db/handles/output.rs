@@ -25,12 +25,19 @@ pub async fn insert_output<'e, E>(
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    const QUERY: &str = "INSERT INTO config_output (config_id, active, name, hls_variants, stream_url, stream_type, stream_format, hls_playlist_name, hls_segment_duration, hls_list_size, desktop_fullscreen, width, height, fps, video_codec, video_options, protocol_options, muxer_options, metadata_options, audio_codec, audio_options, audio_bitrate) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22) RETURNING id";
+    const QUERY: &str = "INSERT INTO config_output (config_id, active, name, label, configured, inherit_resolution, share_encoding, encoding_source_id, encoding_variant, public_moq, hls_variants, stream_url, stream_type, stream_format, hls_playlist_name, hls_segment_duration, hls_list_size, desktop_fullscreen, width, height, fps, video_codec, video_options, protocol_options, muxer_options, metadata_options, audio_codec, audio_options, audio_bitrate) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29) RETURNING id";
 
     let output_id = sqlx::query(QUERY)
         .bind(config_id)
         .bind(active)
         .bind(&output.name)
+        .bind(&output.label)
+        .bind(output.configured)
+        .bind(output.inherit_resolution)
+        .bind(output.share_encoding)
+        .bind(output.encoding_source_id)
+        .bind(&output.encoding_variant)
+        .bind(output.public_moq)
         .bind(&output.hls_variants)
         .bind(&output.stream_url)
         .bind(&output.stream_type)
@@ -597,5 +604,44 @@ mod tests {
         assert_eq!(selected.muxer_options, "{\"flush_packets\":\"1\"}");
         assert_eq!(selected.metadata_options, "{\"copyright\":\"Example\"}");
         assert_eq!(selected.audio_options, "{\"aac_coder\":\"fast\"}");
+    }
+
+    #[tokio::test]
+    async fn migration_seeds_a_private_moq_preview_output_for_shareable_encoders() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        db_migrate(&pool).await.unwrap();
+
+        let outputs = select_outputs(&pool, 1).await.unwrap();
+        let moq = outputs
+            .iter()
+            .find(|output| output.name == "moq")
+            .expect("preview MoQ output is seeded");
+        assert!(moq.active);
+        assert!(moq.configured);
+        assert!(!moq.public_moq);
+        assert!(moq.share_encoding);
+        assert_eq!(moq.label, "Preview (MoQ)");
+        assert_eq!(moq.encoding_variant, "stream");
+
+        let owner = outputs
+            .iter()
+            .find(|output| Some(output.id) == moq.encoding_source_id)
+            .expect("preview MoQ output shares the root encoder");
+        assert_eq!(owner.name, "hls");
+
+        let config = crate::utils::config::PlayoutConfig {
+            output: crate::utils::config::Output::from_record(owner.clone()),
+            outputs: vec![crate::utils::config::Output::from_record(moq.clone())],
+            ..Default::default()
+        };
+        assert!(config.validate_outputs().is_ok());
+        let effective = config.effective_output(&config.outputs[0]).unwrap();
+        assert_eq!(effective.video_codec, "libx264");
+
+        assert_eq!(moq_access(&pool, 1).await.unwrap(), Some(false));
     }
 }

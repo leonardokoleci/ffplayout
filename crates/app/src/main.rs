@@ -105,7 +105,7 @@ async fn async_main() -> Result<(), ProcessError> {
 
     let pool = db_pool().await?;
 
-    let init = init_args(&pool).await?;
+    let _init = init_args(&pool).await?;
 
     if ARGS.init {
         return Ok(());
@@ -149,7 +149,6 @@ async fn async_main() -> Result<(), ProcessError> {
                 app_state.mail_queues.clone(),
                 shutdown.clone(),
                 system.clone(),
-                init,
             )
             .await?;
         }

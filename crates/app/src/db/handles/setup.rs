@@ -32,15 +32,14 @@ pub(crate) async fn initialize_setup_with_rollback(
     .await?;
 
     let result = sqlx::query(
-        "UPDATE config_global SET logs = $1, playlists = $2, public = $3, storage = $4, shared = $5,
-        smtp_server = $6, smtp_user = $7, smtp_password = $8, smtp_starttls = $9, smtp_port = $10,
+        "UPDATE config_global SET logs = $1, playlists = $2, public = $3, shared = $4,
+        smtp_server = $5, smtp_user = $6, smtp_password = $7, smtp_starttls = $8, smtp_port = $9,
         setup_completed = 0 WHERE id = 1 AND setup_completed = 0
         AND NOT EXISTS (SELECT 1 FROM auth_user)",
     )
     .bind(&data.settings.logs)
     .bind(&data.settings.playlists)
     .bind(&data.settings.public)
-    .bind(&data.settings.storage)
     .bind(data.settings.shared)
     .bind(&data.settings.smtp_server)
     .bind(&data.settings.smtp_user)
@@ -56,10 +55,9 @@ pub(crate) async fn initialize_setup_with_rollback(
         ));
     }
 
-    sqlx::query("UPDATE channels SET public = $1, playlists = $2, storage = $3 WHERE id = 1")
+    sqlx::query("UPDATE channels SET public = $1, playlists = $2 WHERE id = 1")
         .bind(&data.channel_public)
         .bind(&data.channel_playlists)
-        .bind(&data.channel_storage)
         .execute(&mut *transaction)
         .await?;
 
@@ -73,6 +71,14 @@ pub(crate) async fn initialize_setup_with_rollback(
     sqlx::query(
         "UPDATE config_output SET active = 1
          WHERE config_id = (SELECT id FROM config WHERE channel_id = 1) AND name = 'hls'",
+    )
+    .execute(&mut *transaction)
+    .await?;
+
+    sqlx::query(
+        "UPDATE config_output SET active = 1
+         WHERE config_id = (SELECT id FROM config WHERE channel_id = 1)
+         AND name = 'moq' AND configured = 1",
     )
     .execute(&mut *transaction)
     .await?;
@@ -130,14 +136,13 @@ async fn restore_setup(
         .await?;
     let global = snapshot.global;
     sqlx::query(
-        "UPDATE config_global SET logs = $1, playlists = $2, public = $3, storage = $4,
-         shared = $5, smtp_server = $6, smtp_user = $7, smtp_password = $8,
-         smtp_starttls = $9, smtp_port = $10, setup_completed = $11 WHERE id = 1",
+        "UPDATE config_global SET logs = $1, playlists = $2, public = $3,
+         shared = $4, smtp_server = $5, smtp_user = $6, smtp_password = $7,
+         smtp_starttls = $8, smtp_port = $9, setup_completed = $10 WHERE id = 1",
     )
     .bind(global.logs)
     .bind(global.playlists)
     .bind(global.public)
-    .bind(global.storage)
     .bind(global.shared)
     .bind(global.smtp_server)
     .bind(global.smtp_user)
@@ -147,15 +152,12 @@ async fn restore_setup(
     .bind(global.setup_completed)
     .execute(&mut *connection)
     .await?;
-    sqlx::query(
-        "UPDATE channels SET public = $1, playlists = $2, storage = $3, active = $4 WHERE id = 1",
-    )
-    .bind(snapshot.channel.public)
-    .bind(snapshot.channel.playlists)
-    .bind(snapshot.channel.storage)
-    .bind(snapshot.channel.active)
-    .execute(&mut *connection)
-    .await?;
+    sqlx::query("UPDATE channels SET public = $1, playlists = $2, active = $3 WHERE id = 1")
+        .bind(snapshot.channel.public)
+        .bind(snapshot.channel.playlists)
+        .bind(snapshot.channel.active)
+        .execute(&mut *connection)
+        .await?;
     sqlx::query(
         "UPDATE config_output SET active = 0
          WHERE config_id = (SELECT id FROM config WHERE channel_id = 1)",
@@ -198,7 +200,6 @@ mod tests {
                 logs: "/test/logs".to_string(),
                 playlists: "/test/playlists".to_string(),
                 public: "/test/public".to_string(),
-                storage: "/test/storage".to_string(),
                 shared: true,
                 smtp_server: "smtp.example.org".to_string(),
                 smtp_user: "test".to_string(),
@@ -208,7 +209,6 @@ mod tests {
             },
             channel_public: "/test/public/1".to_string(),
             channel_playlists: "/test/playlists/1".to_string(),
-            channel_storage: "/test/storage/1".to_string(),
             username: " setup-admin ".to_string(),
             mail: " setup@example.org ".to_string(),
             password_hash: "already-hashed".to_string(),
@@ -244,9 +244,9 @@ mod tests {
         handles::db_migrate(&pool).await.unwrap();
         let global = handles::select_global(&pool).await.unwrap();
         let user = handles::select_login(&pool, "setup-admin").await.unwrap();
-        let channel = handles::select_channel(&pool, &1).await.unwrap();
+        let _channel = handles::select_channel(&pool, &1).await.unwrap();
         let outputs: Vec<String> =
-            sqlx::query_scalar("SELECT name FROM config_output WHERE active = 1")
+            sqlx::query_scalar("SELECT name FROM config_output WHERE active = 1 ORDER BY name")
                 .fetch_all(&pool)
                 .await
                 .unwrap();
@@ -254,8 +254,7 @@ mod tests {
         assert!(global.setup_completed);
         assert_eq!(user.role_id, Some(1));
         assert_eq!(user.channel_ids, Some(vec![1]));
-        assert_eq!(channel.storage, setup_data().channel_storage);
-        assert_eq!(outputs, ["hls"]);
+        assert_eq!(outputs, ["hls", "moq"]);
         assert!(matches!(
             initialize_setup(&pool, &setup_data()).await,
             Err(ServiceError::Conflict(_))
@@ -273,7 +272,7 @@ mod tests {
         let channel = handles::select_channel(&pool, &1).await.unwrap();
         let user = handles::select_login(&pool, "setup-admin").await.unwrap();
         let active_outputs: Vec<String> = sqlx::query_scalar(
-            "SELECT name FROM config_output WHERE active = 1 AND config_id = (SELECT id FROM config WHERE channel_id = 1)",
+            "SELECT name FROM config_output WHERE active = 1 AND config_id = (SELECT id FROM config WHERE channel_id = 1) ORDER BY name",
         )
         .fetch_all(&pool)
         .await
@@ -283,13 +282,12 @@ mod tests {
         assert_eq!(global.logs, data.settings.logs);
         assert_eq!(channel.public, data.channel_public);
         assert_eq!(channel.playlists, data.channel_playlists);
-        assert_eq!(channel.storage, data.channel_storage);
         assert_eq!(user.mail.as_deref(), Some("setup@example.org"));
         assert_eq!(user.password, data.password_hash);
         assert_eq!(user.role_id, Some(1));
         assert_eq!(user.channel_ids, Some(vec![1]));
         assert!(!user.two_factor);
-        assert_eq!(active_outputs, ["hls"]);
+        assert_eq!(active_outputs, ["hls", "moq"]);
         data.settings.logs = "/different/logs".to_string();
 
         assert!(matches!(
@@ -320,7 +318,6 @@ mod tests {
         assert!(!global_after.setup_completed);
         assert_eq!(global_after.logs, global_before.logs);
         assert_eq!(channel_after.public, channel_before.public);
-        assert_eq!(channel_after.storage, channel_before.storage);
         assert_eq!(handles::count_users(&pool).await.unwrap(), 0);
     }
 }

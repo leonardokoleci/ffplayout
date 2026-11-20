@@ -479,7 +479,9 @@ fn media_sequence_start_number(paths: &[String]) -> Result<Option<u64>> {
 fn playlist_uri(line: &str) -> Option<&str> {
     let entry = line.trim();
 
-    if entry.is_empty() || entry.starts_with('#') {
+    // A truncated or corrupt playlist can contain NUL bytes; such an entry is
+    // never a valid URI and would produce an unusable filesystem path.
+    if entry.is_empty() || entry.starts_with('#') || entry.chars().any(char::is_control) {
         return None;
     }
 
@@ -585,6 +587,15 @@ mod tests {
     #[test]
     fn playlist_path_rejects_missing_file_name() {
         assert!(playlist_path("/", &[variant("high")]).is_err());
+    }
+
+    #[test]
+    fn playlist_uri_rejects_corrupt_entries() {
+        assert!(playlist_uri("\0").is_none());
+        assert!(playlist_uri("segment\0.ts").is_none());
+        assert_eq!(playlist_uri("segment_1.ts"), Some("segment_1.ts"));
+        assert_eq!(playlist_uri("#EXTINF:6.0,"), None);
+        assert_eq!(playlist_uri("  "), None);
     }
 
     #[test]

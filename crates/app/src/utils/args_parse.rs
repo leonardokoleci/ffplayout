@@ -98,9 +98,6 @@ pub struct Args {
     #[clap(long, env, help_heading = Some("Initial Setup"), help = "SMTP port for system mail")]
     pub smtp_port: Option<u16>,
 
-    #[clap(long, env, help_heading = Some("Initial Setup / General"), help = "Storage root path")]
-    pub storage: Option<String>,
-
     #[clap(long, env, help_heading = Some("Initial Setup / General"), help = "Logging path")]
     pub logs: Option<String>,
 
@@ -341,15 +338,6 @@ pub async fn init_args(pool: &Pool<Sqlite>) -> Result<bool, ProcessError> {
             global_user(&mut args);
         }
 
-        if let Some(st) = args.storage {
-            global.storage = st;
-        } else {
-            global.storage = Text::new("Storage path:")
-                .with_default(&global.storage)
-                .with_formatter(&clean_input)
-                .prompt()?;
-        }
-
         if let Some(pl) = args.playlists {
             global.playlists = pl;
         } else {
@@ -443,13 +431,8 @@ pub async fn init_args(pool: &Pool<Sqlite>) -> Result<bool, ProcessError> {
         let mut channel = handles::select_channel(pool, &1).await?;
         channel.public = global.public;
         channel.playlists = global.playlists;
-        channel.storage = global.storage;
-
-        let mut storage_path = PathBuf::from(channel.storage.clone());
 
         if global.shared {
-            storage_path = storage_path.join("1");
-
             channel.public = Path::new(&channel.public)
                 .join("1")
                 .to_string_lossy()
@@ -458,7 +441,6 @@ pub async fn init_args(pool: &Pool<Sqlite>) -> Result<bool, ProcessError> {
                 .join("1")
                 .to_string_lossy()
                 .to_string();
-            channel.storage = storage_path.to_string_lossy().to_string();
         };
 
         handles::update_channel(pool, 1, channel).await?;

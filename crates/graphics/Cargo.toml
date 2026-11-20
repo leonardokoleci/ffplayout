@@ -13,7 +13,16 @@ workspace = true
 
 [features]
 default = []
-ffmpeg = ["dep:arc-swap", "dep:ffmpeg-next", "dep:rayon", "dep:log", "dep:image", "dep:fast_image_resize"]
+ffmpeg = [
+    "dep:arc-swap",
+    "dep:ffmpeg-next",
+    "dep:rayon",
+    "dep:log",
+    "dep:image",
+    "dep:fast_image_resize",
+    "dep:headless_chrome",
+    "dep:url",
+]
 
 [dependencies]
 fast_image_resize = { version = "6.1", optional = true, default-features = false, features = ["std"] }
@@ -21,6 +30,8 @@ arc-swap = { version = "1", optional = true }
 rayon = { version = "1.12", optional = true }
 log = { version = "0.4", optional = true }
 anyhow = "1"
+headless_chrome = { version = "1.0.22", optional = true }
+url = { version = "2", optional = true }
 image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
 cosmic-text = "0.19"
 rten-simd = "0.28"

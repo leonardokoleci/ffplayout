@@ -227,7 +227,6 @@ mod tests {
         let mut config = PlayoutConfig::default();
         config.general.channel_id = 1;
         config.playlist.start_sec = Some(0.0);
-        config.channel.storage = std::env::temp_dir();
         let manager = ChannelManager::new(
             pool,
             Channel {

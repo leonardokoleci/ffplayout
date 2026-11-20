@@ -39,6 +39,7 @@ impl SourceKind {
             match mode {
                 ProcessMode::Playlist => Self::Playlist,
                 ProcessMode::Folder => Self::Folder,
+                ProcessMode::Rundown => Self::Playlist,
             }
         }
     }

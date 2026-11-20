@@ -3,11 +3,58 @@ use std::{
     fs,
     io::{self, Write},
     path::{Component, Path, PathBuf},
+    sync::LazyLock,
 };
 
 use uuid::Uuid;
 
 use crate::{db::models::Channel, utils::errors::ServiceError};
+
+/// Protected system paths with their canonicalized form, resolved once. The
+/// canonical form catches platform indirections such as `/etc` -> `/private/etc`
+/// on macOS.
+static PROTECTED_SYSTEM_ROOTS: LazyLock<Vec<(PathBuf, PathBuf)>> = LazyLock::new(|| {
+    PROTECTED_SYSTEM_PATHS
+        .iter()
+        .map(|system| {
+            let declared = PathBuf::from(system);
+            let canonical = resolve_existing_ancestor(&declared).unwrap_or(declared.clone());
+
+            (declared, canonical)
+        })
+        .collect()
+});
+
+/// ffplayout's own directories inside protected system paths, with their
+/// canonicalized form. Media inside them stays browsable.
+static APPLICATION_SYSTEM_ROOTS: LazyLock<Vec<(PathBuf, PathBuf)>> = LazyLock::new(|| {
+    APPLICATION_SYSTEM_PATHS
+        .iter()
+        .map(|application| {
+            let declared = PathBuf::from(application);
+            let canonical = resolve_existing_ancestor(&declared).unwrap_or(declared.clone());
+
+            (declared, canonical)
+        })
+        .collect()
+});
+
+/// Whether the path (or an existing ancestor of it) lies in a protected system
+/// directory without being one of ffplayout's own application directories.
+pub(crate) fn is_protected_system_path(path: &Path) -> bool {
+    let resolved = resolve_existing_ancestor(path).unwrap_or_else(|_| path.to_path_buf());
+
+    let protected = PROTECTED_SYSTEM_ROOTS.iter().any(|(declared, canonical)| {
+        resolved.starts_with(declared) || resolved.starts_with(canonical)
+    });
+
+    protected
+        && !APPLICATION_SYSTEM_ROOTS
+            .iter()
+            .any(|(declared, canonical)| {
+                resolved.starts_with(declared) || resolved.starts_with(canonical)
+            })
+}
 
 /// Owns only directories created by this validation. Failed saves remove them
 /// in reverse order, and only while empty; existing directories are untouched.
@@ -113,15 +160,24 @@ pub async fn prepare_channel_directories(
         ("Logging", PathBuf::from(logs)),
         ("Public", PathBuf::from(&channel.public)),
         ("Playlist", PathBuf::from(&channel.playlists)),
-        ("Storage", PathBuf::from(&channel.storage)),
     ])
     .await
 }
 
 /// Directories that must never be used directly as ffplayout data directories.
+#[cfg(not(windows))]
 const PROTECTED_SYSTEM_PATHS: &[&str] = &[
     "/bin", "/boot", "/dev", "/etc", "/lib", "/lib64", "/proc", "/root", "/run", "/sbin", "/sys",
     "/tmp", "/usr", "/var",
+];
+
+/// Windows directories that hold the operating system and installed programs.
+/// They are never offered for browsing and media inside them is rejected.
+#[cfg(windows)]
+const PROTECTED_SYSTEM_PATHS: &[&str] = &[
+    "C:\\Windows",
+    "C:\\Program Files",
+    "C:\\Program Files (x86)",
 ];
 
 /// ffplayout's own directories, which are allowed even though they live under

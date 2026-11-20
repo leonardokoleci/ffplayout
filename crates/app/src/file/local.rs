@@ -27,7 +27,7 @@ use crate::file::{
     watcher::watch,
 };
 use crate::player::utils::{Media, file_extension, include_file_extension};
-use crate::utils::{config::PlayoutConfig, errors::ServiceError};
+use crate::utils::{config::PlayoutConfig, errors::ServiceError, paths::is_protected_system_path};
 
 #[derive(Clone, Debug)]
 pub struct LocalStorage {
@@ -55,6 +55,30 @@ impl LocalStorage {
     }
 }
 
+/// Browsable filesystem roots: existing drive letters on Windows, the
+/// filesystem root on Unix.
+pub async fn drives() -> Vec<String> {
+    #[cfg(windows)]
+    {
+        let mut roots = Vec::new();
+
+        for letter in b'A'..=b'Z' {
+            let root = format!("{}:\\", letter as char);
+
+            if tokio::fs::metadata(&root).await.is_ok() {
+                roots.push(root);
+            }
+        }
+
+        roots
+    }
+
+    #[cfg(not(windows))]
+    {
+        vec!["/".to_string()]
+    }
+}
+
 impl LocalStorage {
     pub async fn browser(&self, path_obj: &PathObject) -> Result<PathObject, ServiceError> {
         let (path, parent, path_component) =
@@ -64,7 +88,7 @@ impl LocalStorage {
         let parent_path = if path_component.is_empty() {
             self.root.read().await.clone()
         } else {
-            path.parent().unwrap().to_path_buf()
+            path.parent().unwrap_or(&path).to_path_buf()
         };
 
         let mut obj = PathObject::new(path_component, Some(parent));
@@ -80,16 +104,23 @@ impl LocalStorage {
                     continue;
                 };
 
-                if child_meta.is_dir() {
-                    parent_folders.push(
-                        child
-                            .path()
-                            .file_name()
-                            .unwrap()
-                            .to_string_lossy()
-                            .to_string(),
-                    );
+                if !child_meta.is_dir() {
+                    continue;
                 }
+
+                let child_path = child.path();
+
+                if is_protected_system_path(&child_path) {
+                    continue;
+                }
+
+                parent_folders.push(
+                    child_path
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .to_string(),
+                );
             }
 
             parent_folders.path_sort(natural_lexical_cmp);
@@ -115,9 +146,14 @@ impl LocalStorage {
             }
 
             if f_meta.is_dir() {
+                let child_path = child.path();
+
+                if is_protected_system_path(&child_path) {
+                    continue;
+                }
+
                 folders.push(
-                    child
-                        .path()
+                    child_path
                         .file_name()
                         .unwrap()
                         .to_string_lossy()
@@ -448,74 +484,6 @@ impl LocalStorage {
         }
 
         filler_list
-    }
-
-    pub async fn copy_assets(&self) -> Result<(), std::io::Error> {
-        let root = self.root.read().await.clone();
-        if root.is_dir() {
-            let target = root.join("00-assets");
-            let mut dummy_source = Path::new("/usr/share/ffplayout/dummy.vtt");
-            let mut logo_source = Path::new("/usr/share/ffplayout/logo.png");
-
-            if !dummy_source.is_file() {
-                dummy_source = Path::new("./assets/dummy.vtt");
-            }
-            if !logo_source.is_file() {
-                logo_source = Path::new("./assets/logo.png");
-            }
-
-            if !target.is_dir() {
-                let dummy_target = target.join("dummy.vtt");
-                let logo_target = target.join("logo.png");
-
-                fs::create_dir_all(&target).await?;
-                fs::copy(&dummy_source, &dummy_target).await?;
-                fs::copy(&logo_source, &logo_target).await?;
-
-                #[cfg(target_family = "unix")]
-                {
-                    let uid = nix::unistd::Uid::current();
-                    let parent_owner = root.metadata()?.uid();
-
-                    if uid.is_root() && uid.to_string() != parent_owner.to_string() {
-                        // Gracefully skip ownership fixup if the parent UID has
-                        // no matching passwd entry instead of panicking.
-                        match nix::unistd::User::from_uid(parent_owner.into()) {
-                            Ok(Some(user)) => {
-                                nix::unistd::chown(&target, Some(user.uid), Some(user.gid))?;
-
-                                if dummy_target.is_file() {
-                                    nix::unistd::chown(
-                                        &dummy_target,
-                                        Some(user.uid),
-                                        Some(user.gid),
-                                    )?;
-                                }
-                                if logo_target.is_file() {
-                                    nix::unistd::chown(
-                                        &logo_target,
-                                        Some(user.uid),
-                                        Some(user.gid),
-                                    )?;
-                                }
-                            }
-                            Ok(None) => {
-                                error!(
-                                    "No passwd entry for uid {parent_owner}; skipping asset ownership fixup"
-                                );
-                            }
-                            Err(e) => {
-                                error!("Failed to look up uid {parent_owner}: {e}");
-                            }
-                        }
-                    }
-                }
-            }
-        } else {
-            error!("Storage path {:?} not exists!", self.root);
-        }
-
-        Ok(())
     }
 }
 

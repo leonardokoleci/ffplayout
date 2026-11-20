@@ -2,8 +2,10 @@ use log::*;
 
 pub mod folder;
 pub mod playlist;
+pub mod rundown;
 
 pub use playlist::CurrentProgram;
+pub use rundown::RundownSource;
 
 use crate::{
     player::{controller::ChannelManager, input::folder::FolderSource, utils::Media},
@@ -13,6 +15,7 @@ use crate::{
 pub enum SourceIterator {
     Folder(Box<FolderSource>),
     Playlist(Box<CurrentProgram>),
+    Rundown(Box<RundownSource>),
 }
 
 impl SourceIterator {
@@ -20,11 +23,12 @@ impl SourceIterator {
         match self {
             SourceIterator::Folder(folder_source) => folder_source.next().await,
             SourceIterator::Playlist(program) => program.next().await,
+            SourceIterator::Rundown(rundown_source) => rundown_source.next().await,
         }
     }
 }
 
-/// Create a source iterator from playlist, or from folder.
+/// Create a source iterator from playlist, rundown queue, or folder.
 pub async fn source_generator(manager: ChannelManager) -> SourceIterator {
     let config = manager.config.read().await.clone();
     let id = config.general.channel_id;
@@ -50,6 +54,11 @@ pub async fn source_generator(manager: ChannelManager) -> SourceIterator {
             let program = CurrentProgram::new(manager);
 
             SourceIterator::Playlist(Box::new(program.await))
+        }
+        Rundown => {
+            let rundown_source = RundownSource::new(manager).await;
+
+            SourceIterator::Rundown(Box::new(rundown_source))
         }
     }
 }

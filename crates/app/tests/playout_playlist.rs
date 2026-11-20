@@ -1,4 +1,4 @@
-use std::{path::PathBuf, sync::atomic::Ordering};
+﻿use std::{path::PathBuf, sync::atomic::Ordering};
 
 use serial_test::serial;
 use sqlx::sqlite::SqlitePoolOptions;
@@ -31,14 +31,13 @@ async fn prepare_config() -> (PlayoutConfig, ChannelManager) {
     let hls = current_path.join("hls");
     let log = current_path.join("log");
     let playlists = current_path.join("playlists");
-    let storage = current_path.join("storage");
     let filler = current_path.join("storage/media_filler/filler_0.mp4");
 
     sqlx::query(
         r#"
-        UPDATE config_global SET public = $1, logs = $2, playlists = $3, storage = $4;
-        UPDATE channels SET public = $1, playlists = $3, storage = $4;
-        UPDATE config_storage SET filler = $5;
+        UPDATE config_global SET public = $1, logs = $2, playlists = $3;
+        UPDATE channels SET public = $1, playlists = $3;
+        UPDATE config_storage SET filler = $4;
         UPDATE config_output SET width = 1024, height = 576, active = 0;
         UPDATE config_output SET active = 1 WHERE id = 4;
         "#,
@@ -46,7 +45,6 @@ async fn prepare_config() -> (PlayoutConfig, ChannelManager) {
     .bind(hls.to_string_lossy())
     .bind(log.to_string_lossy())
     .bind(playlists.to_string_lossy())
-    .bind(storage.to_string_lossy())
     .bind(filler.to_string_lossy())
     .execute(&pool)
     .await

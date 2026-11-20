@@ -55,7 +55,7 @@ export type Playlist = { day_start: string, length: string, infinit: boolean, };
  */
 export type PlayoutConfig = { general: General, mail: Mail, notification: Notification, logging: Logging, processing: Processing, audio: Audio, ingest: Ingest, playlist: Playlist, storage: Storage, text: Text, task: Task, recording: Recording, output: Output, program: ProgramFormat | null, outputs: Array<Output>, };
 
-export type ProcessMode = "folder" | "playlist";
+export type ProcessMode = "folder" | "playlist" | "rundown";
 
 export type Processing = { mode: ProcessMode, add_logo: boolean, logo: string, logo_scale: string, logo_opacity: number, logo_position: string, logo_high_quality: boolean, graphics_cache_mib: number, vtt_enable: boolean, vtt_dummy: string | null, vtt_name: string, vtt_language: string, vtt_default: boolean, };
 
@@ -63,7 +63,7 @@ export type ProgramFormat = { width: number, height: number, fps: number, };
 
 export type Recording = { enable: boolean, source: EncodingSource, source_output_id: number | null, variant: string, path: string, segment_duration: number, retention_days: number, minimum_free_space_gb: number, width: number, height: number, video_codec: string, video_options: { [key in string]: string }, audio_codec: string, audio_options: { [key in string]: string }, audio_bitrate: number, };
 
-export type Storage = { filler: string, extensions: Array<string>, shuffle: boolean, shared_storage: boolean, };
+export type Storage = { filler: string, extensions: Array<string>, shuffle: boolean, };
 
 export type StreamType = "rtmp" | "srt" | "udp" | "custom";
 

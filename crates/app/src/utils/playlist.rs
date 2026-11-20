@@ -98,12 +98,10 @@ pub async fn generate_playlist(
     manager: ChannelManager,
     shuffle_override: Option<bool>,
 ) -> Result<JsonPlaylist, ServiceError> {
-    let (template, storage_root) = {
+    let (template, browser_root) = {
         let mut config = manager.config.write().await;
-        (
-            config.general.template.take(),
-            config.channel.storage.clone(),
-        )
+        let root = manager.storage.root.read().await.clone();
+        (config.general.template.take(), root)
     };
 
     if let Some(mut template) = template {
@@ -111,7 +109,7 @@ pub async fn generate_playlist(
             let mut resolved_paths = Vec::with_capacity(source.paths.len());
 
             for path in &source.paths {
-                let (safe_path, _, _) = norm_abs_path(&storage_root, &path.to_string_lossy())?;
+                let (safe_path, _, _) = norm_abs_path(&browser_root, &path.to_string_lossy())?;
                 resolved_paths.push(safe_path);
             }
 

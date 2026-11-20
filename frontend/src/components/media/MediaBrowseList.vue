@@ -1,9 +1,10 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { useI18n } from 'vue-i18n'
 import VirtualList from 'vue-virtual-sortable'
 
 import { stringFormatter } from '@/composables/helper'
-import { useMedia } from '@/stores/media'
+import { multiDragGhost } from '@/composables/multiDragGhost'
+import { joinBrowsePath, useMedia } from '@/stores/media'
 
 const { t } = useI18n()
 const { mediaType, secToHMS } = stringFormatter()
@@ -14,19 +15,67 @@ defineProps<{
 
 const mediaStore = useMedia()
 
-const dragGroup = { name: 'dragGroup', pull: 'clone', put: false }
+// Anchor row for shift-range selection.
+let selectionAnchor = ''
 
-function folderPath(name: string) {
-    return `/${mediaStore.folderTree.source}/${name}`.replace(/\/[/]+/g, '/')
+function selectFiles(item: any, event: MouseEvent) {
+    // The preview button manages its own action.
+    if ((event.target as HTMLElement).closest('button')) return
+
+    const names = mediaStore.folderTree.files.map((file: any) => file.name)
+
+    if (event.shiftKey && selectionAnchor) {
+        const from = names.indexOf(selectionAnchor)
+        const to = names.indexOf(item.name)
+
+        if (from >= 0 && to >= 0) {
+            const [start, end] = from <= to ? [from, to] : [to, from]
+            mediaStore.selectedFiles = names.slice(start, end + 1)
+        }
+
+        return
+    }
+
+    selectionAnchor = item.name
+
+    if (event.ctrlKey || event.metaKey) {
+        mediaStore.selectedFiles = mediaStore.selectedFiles.includes(item.name)
+            ? mediaStore.selectedFiles.filter((name) => name !== item.name)
+            : [...mediaStore.selectedFiles, item.name]
+    } else {
+        mediaStore.selectedFiles = [item.name]
+    }
 }
 
-// Navigate through the tree path, so the tree and this list stay in sync.
+function folderPath(name: string) {
+    return joinBrowsePath(mediaStore.folderTree.source, name)
+}
+
 function openFolder(name: string) {
-    mediaStore.revealTreePath(folderPath(name))
+    mediaStore.getTree(folderPath(name))
 }
 
 function togglePin(name: string) {
     mediaStore.togglePreferredFolder(folderPath(name))
+}
+
+// A drag that starts on a selected row carries the whole selection.
+function draggedSelection(item: any) {
+    const selected = mediaStore.selectedFiles
+        .map((name) => mediaStore.folderTree.files.find((file: any) => file.name === name))
+        .filter((file) => file !== undefined)
+
+    return selected.length > 1 && selected.some((file) => file.name === item.name) ? selected : [item]
+}
+
+// Same native HTML5 drag flow as the media page: the badge must be in the
+// DOM before the browser snapshots the drag image.
+function handleDragStart(event: DragEvent, item: any) {
+    const selection = draggedSelection(item)
+
+    // Only a drag that carries the whole selection gets the count badge.
+    multiDragGhost(event, selection.length, t('player.selectedCount', { n: selection.length }))
+    event.dataTransfer?.setData('application/json', JSON.stringify(item))
 }
 </script>
 <template>
@@ -39,7 +88,7 @@ function togglePin(name: string) {
                         <button
                             v-if="mediaStore.crumbs.length - 1 > index"
                             class="flex items-center"
-                            @click="mediaStore.revealTreePath(crumb.path)"
+                            @click="mediaStore.getTree(crumb.path)"
                         >
                             <i class="bi-folder-fill me-1" />
                             <span class="text-xs font-bold text-base-content/60 leading-tight">
@@ -63,13 +112,8 @@ function togglePin(name: string) {
                 id="mediaList"
                 v-model="mediaStore.folderTree.files"
                 class="w-full h-full"
-                :group="dragGroup"
                 :data-key="'name'"
-                :handle="'.handle'"
-                :sortable="false"
-                ghost-class="sortable-ghost"
-                placeholder-class="media-placeholder"
-                chosen-class="cursor-grabbing"
+                :disabled="true"
                 wrap-tag="ul"
                 wrap-class="relative list-none"
                 :animation="50"
@@ -107,7 +151,12 @@ function togglePin(name: string) {
                 <template #item="{ item }">
                     <li
                         :key="item.name"
-                        class="grid grid-cols-[30px_auto_32px_62px] odd:bg-base-200 border-b border-base-content/20 py-1 items-center"
+                        :data-name="item.name"
+                        draggable="true"
+                        class="grid grid-cols-[30px_auto_32px_62px] odd:bg-base-200 border-b border-base-content/20 py-1 items-center select-none cursor-default"
+                        :class="{ 'bg-warning/40!': mediaStore.selectedFiles.includes(item.name) }"
+                        @dragstart="handleDragStart($event, item)"
+                        @click="selectFiles(item, $event)"
                     >
                         <div class="px-2">
                             <i v-if="mediaType(item.name) === 'audio'" class="bi-music-note-beamed" />
@@ -115,7 +164,7 @@ function togglePin(name: string) {
                             <i v-else-if="mediaType(item.name) === 'image'" class="bi-file-earmark-image" />
                             <i v-else class="bi-file-binary" />
                         </div>
-                        <div class="truncate handle cursor-grab">
+                        <div class="truncate cursor-grab">
                             {{ item.name }}
                         </div>
                         <div class="text-center leading-3">

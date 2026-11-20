@@ -426,3 +426,41 @@ async fn file_and_public_routes_reject_encoded_traversal_and_external_symlinks()
         }
     }
 }
+
+#[tokio::test]
+#[serial]
+async fn drive_roots_and_their_folders_are_browsable() {
+    let fixture = security_fixture().await;
+    let user = access_token(&fixture.state, 1).await;
+
+    let drive = if cfg!(windows) { "C:/" } else { "/" };
+
+    for source in [
+        drive,
+        &format!("{drive}Users"),
+        &format!("{drive}Users/Leonardi"),
+    ] {
+        let response = fixture
+            .app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/file/1/browse",
+                Some(user.as_str()),
+                json!({"source": source, "with_duration": false}),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK, "{source}");
+
+        let value: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+
+        assert!(
+            !value["folders"].as_array().unwrap().is_empty(),
+            "{source} lists folders"
+        );
+    }
+}
